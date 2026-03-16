@@ -113,7 +113,7 @@ api-gateway-auth/
    .\venv\Scripts\Activate.ps1
 
    # Windows (Git Bash) / Linux / macOS
-   source venv/bin/activate
+   source venv/Scripts/activate
    ```
 
 3. **Instalar dependencias**

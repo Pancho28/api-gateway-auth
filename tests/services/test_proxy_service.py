@@ -50,7 +50,8 @@ async def test_proxy_service_forward_success(mocker):
         url="http://test/api/data",
         headers={"other-header": "value", "X-Internal-Api-Key": "test"},
         params=req.query_params,
-        content=b'payload'
+        content=b'payload',
+        timeout=mocker.ANY
     )
 
 @pytest.mark.asyncio

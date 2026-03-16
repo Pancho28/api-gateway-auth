@@ -1,4 +1,5 @@
 import httpx
+import asyncio
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from core.config import settings
@@ -40,21 +41,35 @@ class ProxyService:
 
         try:
             content = await request.body()
-            resp = await self.client.request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                params=request.query_params,
-                content=content
-            )
+            timeout = httpx.Timeout(3.0) # 3 segundos de timeout
             
-            return JSONResponse(
-                status_code=resp.status_code,
-                content=resp.json() if resp.headers.get("content-type") == "application/json" else resp.text,
-                headers=dict(resp.headers)
-            )
+            # Solo permitir reintentos en peticiones GET
+            max_retries = 2 if request.method.upper() == "GET" else 0
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    resp = await self.client.request(
+                        method=request.method,
+                        url=url,
+                        headers=headers,
+                        params=request.query_params,
+                        content=content,
+                        timeout=timeout
+                    )
+                    
+                    return JSONResponse(
+                        status_code=resp.status_code,
+                        content=resp.json() if resp.headers.get("content-type") == "application/json" else resp.text,
+                        headers=dict(resp.headers)
+                    )
+                except (httpx.TimeoutException, httpx.RequestError) as e:
+                    if attempt == max_retries:
+                        # Si fallaron todos los intentos, arrojamos el error final
+                        raise e
+                    # Breve pausa antes del siguiente reintento
+                    await asyncio.sleep(1)
         except Exception as e:
-            # Esto será capturado por el manejador global de httpx en main.py
+            # Esto será capturado por el manejador global en main.py (ej. 502 Bad Gateway)
             raise e
 
     async def close(self):
