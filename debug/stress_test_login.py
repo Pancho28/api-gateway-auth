@@ -5,8 +5,8 @@ import time
 # Configuración de la prueba
 URL = "http://127.0.0.1:8000/auth/login"
 PAYLOAD = {"email": "admin@example.com", "password": "wrong_password"}
-NUM_REQUESTS = 150  # El límite configurado es 100/minuto para IPs públicas
-CONCURRENCY = 20    # Cuántas peticiones hacer al mismo tiempo
+NUM_REQUESTS = 20   # El límite configurado es 10/minuto para IPs públicas
+CONCURRENCY = 5     # Cuántas peticiones hacer al mismo tiempo
 
 async def make_request(client, req_id):
     """Ejecuta una petición individual y retorna el código de estado."""
@@ -54,7 +54,7 @@ async def main():
     if rate_limited_429 > 0:
         print("¡El Rate Limiting está funcionando! Ha bloqueado peticiones con un código 429.")
     else:
-        print("No se registraron bloqueos 429. ¿Está el Rate Limiter configurado correctamente a menos de 150?")
+        print("No se registraron bloqueos 429. ¿Está el Rate Limiter configurado correctamente a menos de 20?")
 
 if __name__ == "__main__":
     asyncio.run(main())

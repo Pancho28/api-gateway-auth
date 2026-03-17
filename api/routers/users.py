@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/users", tags=["Users"])
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-@limiter.limit("50/minute")
+@limiter.limit("5/minute")
 async def create_user(
     request: Request,
     user_in: AdminUserCreate,

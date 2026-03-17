@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["Gateway"])
 
 @router.get("/health")
-@limiter.limit("100/minute")
+@limiter.limit("5/minute")
 async def health_check(request: Request):
     """Endpoint público de salud del Gateway."""
     logger.info("Verificación de salud (health check) solicitada.")
@@ -20,7 +20,7 @@ async def health_check(request: Request):
     }
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@limiter.limit("50/minute")
+@limiter.limit("20/minute")
 async def reverse_proxy(
     request: Request, 
     path: str, 

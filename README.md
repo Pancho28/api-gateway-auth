@@ -8,7 +8,10 @@ API Gateway centralizado construido con **FastAPI** que gestiona la **autenticac
 
 - **Autenticación JWT** — Login seguro con tokens de acceso firmados (HS256) y expiración configurable.
 - **Autorización RBAC** — Control de acceso basado en roles (`ADMIN`, `USER`) con protección a nivel de endpoint.
-- **Reverse Proxy Asíncrono** — Reenvío transparente de peticiones HTTP a microservicios configurados, con inyección automática de API Keys internas (`X-Internal-Api-Key`).
+- **Reverse Proxy con Streaming** — Reenvío eficiente de peticiones mediante fragmentos (chunks), evitando el uso excesivo de memoria RAM.
+- **Enrutamiento por Prefijo (Path-based)** — Interceptación de peticiones basada en el primer segmento de la URL (ej. `/ventas/`) para una arquitectura más limpia.
+- **Resiliencia de Red** — Reintentos automáticos configurables para peticiones idempotentes (GET) en caso de fallos temporales.
+- **Control de Tasa (Rate Limiting)** — Protección contra abusos y ataques de denegación de servicio (DoS) ajustada para producción.
 - **Gestión de Usuarios** — Creación de usuarios restringida a administradores con validación de datos vía Pydantic.
 - **Seeding Automático** — Inicialización de un usuario administrador por defecto al arrancar la aplicación.
 - **Configuración Centralizada** — Variables de entorno gestionadas con `pydantic-settings` desde un archivo `.env`.
@@ -143,8 +146,8 @@ api-gateway-auth/
    EMAIL_ADMIN=admin@example.com
    PASSWORD_ADMIN=contraseña_segura
 
-   # Microservicios (JSON string)
-   MICROSERVICES='{"ventas.local": {"url": "http://localhost:8001", "api_key": "key-ventas"}, "stock.local": {"url": "http://localhost:8002", "api_key": "key-stock"}}'
+   # Microservicios (JSON string - Enrutamiento por Prefijo)
+   MICROSERVICES='{"ventas": {"url": "http://localhost:8001", "api_key": "key-ventas"}, "stock": {"url": "http://localhost:8002", "api_key": "key-stock"}}'
    ```
 
 5. **Crear la base de datos MySQL**
@@ -218,20 +221,20 @@ $env:PYTHONPATH="."; pytest --cov=core --cov=api --cov=services --cov-report=ter
 Se han incluido scripts en la carpeta `debug/` para validar el comportamiento del **Rate Limiter** bajo carga pesada.
 
 #### 1. Estrés de Login (Público)
-Valida el límite de **100 peticiones/minuto** para IPs públicas en el endpoint de autenticación.
+Valida el límite estricto de **10 peticiones/minuto** para IPs públicas en el endpoint de autenticación.
 - **Archivo**: `debug/stress_test_login.py`
 - **Uso**: `python debug/stress_test_login.py`
-- **Salida esperada**: Tras 150 peticiones concurrentes, se obtienen ~100 respuestas `401` y exactamente **50 respuestas `429 Too Many Requests`**.
+- **Salida esperada**: Tras 20 peticiones concurrentes, se obtienen ~10 respuestas exitosas/fallidas y exactamente **10 respuestas `429 Too Many Requests`**.
 - **Nota**: debe ejecutarse con el gateway iniciado.
 
 #### 2. Estrés de Proxy (Autenticado)
-Valida el límite de **50 peticiones/minuto** por usuario en los endpoints protegidos del Gateway.
+Valida el límite de **20 peticiones/minuto** por usuario en los endpoints protegidos del Gateway.
 - **Archivo**: `debug/stress_test_proxy.py`
 - **Uso**: 
   1. Iniciar Gateway: `./manage.sh gateway`
   2. Iniciar Mock: `./manage.sh mock ventas`
   3. Ejecutar: `python debug/stress_test_proxy.py`
-- **Salida esperada**: Tras 75 peticiones concurrentes, se obtienen 50 respuestas `200 OK` (y/o `404`) y exactamente **25 respuestas `429 Too Many Requests`**.
+- **Salida esperada**: Tras 30 peticiones concurrentes, se obtienen 20 respuestas exitosas y exactamente **10 respuestas `429 Too Many Requests`**.
 - **Nota**: debe ejecutarse con el gateway y el mock de ventas iniciados.
 
 

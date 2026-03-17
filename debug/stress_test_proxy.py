@@ -10,18 +10,18 @@ load_dotenv()
 # Configuración Base
 BASE_URL = "http://127.0.0.1:8000"
 LOGIN_URL = f"{BASE_URL}/auth/login"
-PROXY_URL = f"{BASE_URL}/items/42" # Ruta ficticia en el proxy intermedio
+PROXY_URL = f"{BASE_URL}/ventas/health" # Usando la nueva ruta basada en prefijos
 
 # Credenciales desde el .env
 EMAIL = os.getenv("EMAIL_ADMIN", "admin@gmail.com")
 PASSWORD = os.getenv("PASSWORD_ADMIN", "123456")
 
-# Host configurado en MICROSERVICES (para el encabezado HOST que activa el enrutamiento del gateway)
-TARGET_HOST = "ventas.local"
+# Nota: El enrutamiento ahora se basa en el prefijo de la URL, no en el header Host
+# TARGET_HOST ya no es necesario para el proxying
 
 # Configuración de Estrés
-NUM_REQUESTS = 75   # El límite para endpoints privados logueados es 50/usuario/minuto
-CONCURRENCY = 10    
+NUM_REQUESTS = 30   # El límite para el proxy es 20/usuario/minuto
+CONCURRENCY = 5    
 
 async def login(client):
     """Realiza el login y retorna el token JWT."""
@@ -39,10 +39,8 @@ async def login(client):
         return None
 
 async def make_proxy_request(client, token, req_id):
-    """Ejecuta una petición al gateway enviando el Token Bearer y el header Host."""
     headers = {
-        "Authorization": f"Bearer {token}",
-        "Host": TARGET_HOST
+        "Authorization": f"Bearer {token}"
     }
     try:
         response = await client.get(PROXY_URL, headers=headers)
@@ -96,7 +94,7 @@ async def main():
     if rate_limited_429 > 0:
         print(f"✅ ¡Rate Limiter Híbrido funcionando! Bloqueó exactamente a 1 Usuario. {success_200} completadas, {rate_limited_429} interceptadas.")
     else:
-        print("❌ No se registraron bloqueos 429. ¿El límite es mayor a 75 o está inactivo?")
+        print("❌ No se registraron bloqueos 429. ¿El límite es mayor a 30 o está inactivo?")
 
 if __name__ == "__main__":
     asyncio.run(main())

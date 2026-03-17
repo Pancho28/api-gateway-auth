@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/login", response_model=Token)
-@limiter.limit("100/minute")
+@limiter.limit("10/minute")
 async def login(
     request: Request,
     user_in: UserLogin, 

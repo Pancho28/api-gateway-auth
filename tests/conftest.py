@@ -9,7 +9,7 @@ os.environ["DB_PASSWORD"] = "test"
 os.environ["DB_NAME"] = "test"
 os.environ["EMAIL_ADMIN"] = "admin@test.com"
 os.environ["PASSWORD_ADMIN"] = "testpass"
-os.environ["MICROSERVICES"] = '{"test.com": {"url": "http://test", "api_key": "test"}}'
+os.environ["MICROSERVICES"] = '{"test": {"url": "http://test", "api_key": "test"}}'
 
 from httpx import AsyncClient, ASGITransport
 from main import app
