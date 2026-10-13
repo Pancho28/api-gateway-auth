@@ -1,0 +1,79 @@
+version: "3.8"
+
+services:
+  # Servidor de Base de Datos Principal
+  postgres:
+    image: postgres:16-alpine
+    container_name: gateway_auth_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-gateway_auth}
+    ports:
+      - "${POSTGRES_DIRECT_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-gateway_auth}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gateway-network
+
+  # Connection Pooler de Alto Rendimiento (PgBouncer en Transaction Mode)
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.22.1
+    container_name: gateway_auth_pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-gateway_auth}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+      MIN_POOL_SIZE: 5
+      RESERVE_POOL_SIZE: 5
+      SERVER_RESET_QUERY: DISCARD ALL
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      ADMIN_USERS: ${DB_USER:-postgres}
+      AUTH_TYPE: plain
+    ports:
+      - "${DB_PORT:-6432}:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - gateway-network
+
+  # Capa de Caché y Estado Distribuido de Alta Velocidad
+  redis:
+    image: redis:7-alpine
+    container_name: gateway_auth_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - gateway-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  gateway-network:
+    driver: bridge

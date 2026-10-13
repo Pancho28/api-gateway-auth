@@ -66,29 +66,33 @@ Sus responsabilidades fundamentales son:
 Con el fin de evolucionar este Gateway hacia una arquitectura Enterprise robusta, escalable y altamente performante, se establece la siguiente hoja de ruta basada en las prioridades del proyecto:
 
 ### Fase 1: Hardening de Seguridad Inmediato (Quick Wins)
-*   [ ] Reforzar los esquemas de Pydantic con Regex para contraseñas, max-lengths para evitar ReDoS y `Literal` para roles.
-*   [ ] Modificar `ProxyService` para aplicar una purga estricta (stripping) de cabeceras de confianza antes de procesar la petición hacia la red interna.
-*   [ ] Sanitizar `sub_path` en el proxy para evitar vulnerabilidades de Path Traversal.
-*   [ ] Esterilizar los logs de excepciones globales (Error 500).
+*Nota de Metodología:* Todas las tareas de esta fase se desarrollarán rigurosamente bajo **TDD** (Fase Red -> Fase Green -> Fase Refactor).
+
+*   [x] Reforzar los esquemas de Pydantic con Regex para contraseñas (mínimo 8, máximo 40 caracteres con letras y números), límite de email (máximo 50 caracteres), max-lengths de seguridad y `Literal["ADMIN", "USER"]` para roles.
+*   [x] Modificar `ProxyService` para aplicar una purga estricta (stripping) de cabeceras de confianza antes de procesar la petición hacia la red interna.
+*   [x] Sanitizar `sub_path` en el proxy para evitar vulnerabilidades de Path Traversal.
+*   [x] Esterilizar los logs de excepciones globales (Error 500).
 
 ### Fase 2: Modernización de Almacenamiento (Migración a PostgreSQL y PgBouncer)
 *   **Motivación:** Mayor flexibilidad, mejor soporte para tipos de datos JSON complejos, capacidades geoespaciales nativas, y concurrencia superior mediante MVCC frente a MySQL. Además, preparar la arquitectura para soportar múltiples aplicaciones conectadas simultáneamente.
 *   **Gestión de Conexiones (PgBouncer):** Implementar PgBouncer como *Connection Pooler* delante de PostgreSQL. Esto permitirá que el API Gateway pueda escalar horizontalmente (a múltiples instancias o pods) sin agotar las conexiones del sistema operativo de la base de datos (evitando el *Connection Exhaustion*). PgBouncer mantendrá conexiones persistentes y multiplexará miles de peticiones de clientes de forma extremadamente rápida.
-*   **Acciones:** 
-    *   Modificar la cadena de conexión en `.env`.
-    *   Instalar dependencias asíncronas: `asyncpg`.
-    *   Regenerar migraciones de `alembic` (si están en uso) para compatibilidad con la sintaxis de PostgreSQL.
-    *   Desplegar contenedor/servicio de PgBouncer apuntando a PostgreSQL y reconfigurar el Gateway para conectarse a través de él.
+*   **Acciones Realizadas:** 
+    *   [x] Documentar ADR formal: [`docs/adr/0001-migracion-postgresql-asyncpg-pgbouncer.md`](docs/adr/0001-migracion-postgresql-asyncpg-pgbouncer.md).
+    *   [x] Instalar dependencias asíncronas: `asyncpg==0.32.0` en `requirements.txt`.
+    *   [x] Modificar la cadena de conexión en `.env` y `.env.sample` (`postgresql+asyncpg://`).
+    *   [x] Configurar mitigación de prepared statements en `core/database.py` (`statement_cache_size=0`) para compatibilidad con PgBouncer en transaction mode.
+    *   [x] Adaptar modelo `User` en `models/user.py` para compatibilidad con tipos estándar PostgreSQL.
+    *   [x] Proveer `docker-compose.yml` con servicios orquestados de PostgreSQL 16 y PgBouncer.
 
 ### Fase 3: Aceleración y Resiliencia con Redis (Ultra-Baja Latencia)
-*   **Validación de Sesiones Ultrarrápida (JWT Caching):**
-    *   *Flujo Actualizado:* En el login (`/auth/login`), validar credenciales contra PostgreSQL y luego almacenar en Redis un par `Key=UserEmail (o UUID), Value=Roles/Estado` con un TTL igual a la expiración del JWT.
-    *   El middleware `get_current_user` decodificará el JWT y verificará su existencia/estado **exclusivamente contra Redis**, eliminando la latencia del Query a SQL en cada petición al proxy.
-*   **Caché de Peticiones Repetitivas (Proxy Caching):**
-    *   Implementar un middleware/decorador que intercepte peticiones `GET` repetitivas (ej. catálogos, configuraciones).
-    *   Si la respuesta (hash de la URL + query params) existe en Redis, devolver directamente desde el Gateway (Hit), evitando por completo llamar al microservicio interno y reduciendo tiempos de respuesta de milisegundos a microsegundos.
-*   **Rate Limiting Distribuido:**
-    *   Migrar el almacenamiento en memoria de `slowapi` a un backend de Redis para mantener coherencia de límites si el Gateway escala horizontalmente.
+*   **Acciones Realizadas:**
+    *   [x] Documentar ADR formal: [`docs/adr/0002-estrategia-cache-sesiones-rate-limiting-redis.md`](docs/adr/0002-estrategia-cache-sesiones-rate-limiting-redis.md).
+    *   [x] Instalar dependencia `redis==8.1.0` en el entorno virtual y registrar en `requirements.txt`.
+    *   [x] Añadir servicio `redis:7-alpine` a `docker-compose.yml` con healthcheck y volumen persistente.
+    *   [x] Crear módulo `core/redis.py` con pool de conexiones asíncrono y degradación elegante (Graceful Degradation).
+    *   [x] **Validación de Sesiones Ultrarrápida (JWT Caching):** Almacenar sesión en Redis tras login en `auth_service.py` y validar en `get_current_user` (<1ms) sin consultas SQL a PostgreSQL.
+    *   [x] **Caché de Peticiones Repetitivas (Proxy Caching):** Interceptar peticiones `GET` en `ProxyService`, cacheando respuestas exitosas (HTTP 200) con inyección de cabeceras `X-Cache: HIT` / `X-Cache: MISS`.
+    *   [x] **Rate Limiting Distribuido:** Centralizar cuotas en Redis para escalabilidad horizontal con fallback automático a memoria si Redis no está activo.
 
 ### Fase 4: Observabilidad y Circuit Breaker
 *   **Tracing Distribuido:** Integración con OpenTelemetry para inyectar `Trace-IDs` en las cabeceras proxy, permitiendo seguir el recorrido de la petición en herramientas como Jaeger o Datadog.
@@ -100,6 +104,8 @@ Con el fin de evolucionar este Gateway hacia una arquitectura Enterprise robusta
 
 Según lo estipulado en `agent.md`, toda implementación correspondiente a la Fase 2 en adelante debe ir acompañada de un **Architecture Decision Record (ADR)** ubicado en `docs/adr/`.
 
-*   *Ejemplo de futuros ADRs a crear:* 
-    *   `ADR-001: Migración de MySQL a PostgreSQL con asyncpg.`
-    *   `ADR-002: Estrategia de Caché de Sesiones y Rate Limiting usando Redis.`
+*   **ADRs Implementados:**
+    *   [ADR-001: Migración de MySQL a PostgreSQL con asyncpg y Connection Pooling mediante PgBouncer](docs/adr/0001-migracion-postgresql-asyncpg-pgbouncer.md).
+    *   [ADR-002: Estrategia de Caché de Sesiones, Proxy Caching y Rate Limiting usando Redis](docs/adr/0002-estrategia-cache-sesiones-rate-limiting-redis.md).
+*   *Próximos ADRs a crear:* 
+    *   `ADR-003: Trazabilidad Distribuida con OpenTelemetry y Circuit Breaking.`

@@ -15,21 +15,23 @@
 - **Estilo**: PEP8, Type Hints obligatorios, docstrings en Español.
 
 ## Protocolo de Desarrollo (Agent Workflow)
-- **Flujo de Trabajo**: 
+- **Flujo de Trabajo (TDD)**: 
     1. Analizar el problema:
         - Leer archivos afectados y explicar el plan antes de codificar.
     2. Explicar el plan de solución
     3. Identificar archivos a modificar
-    4. Mostrar cambios propuestos
-    5. Implementar código:
-        - Cambios atómicos. No reescribir archivos sin necesidad.
+    4. Diseñar y escribir pruebas (Fase Red): Escribir tests automatizados que verifiquen los nuevos requisitos antes de implementar la solución.
+    5. Implementar código (Fase Green):
+        - Implementar el código mínimo y atómico necesario para satisfacer las pruebas.
         - Mantener estilo existente del archivo
         - No refactorizar código no relacionado
         - No modificar archivos de configuración global sin autorización
         - No cambiar interfaces públicas existentes
         - Mantener compatibilidad con código existente
         - No eliminar funciones sin verificar su uso
-    6. Validar código
+    6. Refactorizar y Validar (Fase Refactor):
+        - Limpiar y optimizar el código manteniendo las pruebas en verde.
+        - Validar toda la suite de pruebas del proyecto.
 
 ## Arquitectura y Estándares
 - **Patrón**: Router / Service.
@@ -82,6 +84,7 @@
     - Incluir contexto relevante (request_id, user_id) sin loggear información sensible (passwords, tokens).
     - Niveles: DEBUG para trazabilidad técnica, INFO para flujo de negocio, WARNING para anomalías recuperables, ERROR para excepciones, CRITICAL para fallos de infraestructura.
 - **Testing**: 
+    - Metodología: **TDD (Test-Driven Development)** mandatorio. Escribir primero las pruebas que fallen (Red), implementar el código para hacerlas pasar (Green) y refactorizar (Refactor).
     - Framework: `pytest` con `pytest-asyncio`.
     - Mocks: Usar `unittest.mock` o `pytest-mock`. Los tests deben ser aislados de la DB real usando una DB de test o mocks de sesión.
     - Tipos de tests: Unitarios para lógica de servicios, Integración para routers y DB.
