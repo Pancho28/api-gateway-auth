@@ -268,15 +268,136 @@ Fase 1: Estructura & Core          Fase 2: Auth & Redis            Fase 3: Proxy
 
 ## 7. Estado de la Organización de Carpetas
 
-A la fecha de emisión de este documento, el repositorio ha quedado estructurado de la siguiente forma:
+Tras finalizar la migración y validar el 100% de las pruebas, el proyecto en Python ha sido retirado del árbol activo (preservado íntegramente en el historial de Git) y la implementación en Go ha sido promovida a la carpeta raíz como la única y definitiva base de código:
 
-* **`/` (Raíz):**
-  * `migracion_go.md` (Este documento).
-  * `README.md`, `SPEC_API_GATEWAY_AUTH.md`, `agent.md`.
-  * `docs/` (ADR-001 y ADR-002).
-  * `docker-compose.yml` (Infraestructura compartida: Postgres 16, PgBouncer, Redis 7).
-  * `.env.sample`.
-* **`gateway-python/`:**
-  * Proyecto completo original en Python (FastAPI, SQLAlchemy, servicios, routers y los 59 tests verificados al 100%).
-* **`gateway-go/`:**
-  * Directorio preparado para la construcción del nuevo servicio en Go.
+* **`/` (Raíz del Repositorio - Go Nativo):**
+  * `cmd/gateway/main.go`: Punto de entrada del Gateway compilado.
+  * `internal/`: Paquetes de arquitectura limpia (`api`, `auth`, `config`, `database`, `models`, `proxy`, `redis`, `security`, `user`).
+  * `test/api_test.go`: Suite de integración HTTP perimetral.
+  * `Dockerfile`: Multi-stage build optimizado para Railway (<20 MB).
+  * `docker-compose.yml`: Infraestructura (Postgres 16, PgBouncer, Redis 7).
+  * `go.mod` y `go.sum`: Módulos de Go.
+  * `README.md`, `agent.md`, `SPEC_API_GATEWAY_AUTH.md`, `migracion_go.md`.
+  * `docs/adr/`: Registros de decisión arquitectónica (ADR-001 y ADR-002).
+
+---
+
+## 8. Protocolo de Pruebas de Rendimiento Comparativo (Python vs. Go)
+
+> **Nota:** La versión en Python ha sido retirada del árbol de trabajo principal y conservada en el historial de Git. Los scripts de simulación y carga histórica (`gateway-python/debug/`) pueden consultarse o restaurarse desde el historial de Git si se desea repetir benchmarks sintéticos entre versiones.
+
+Este protocolo establece los pasos a seguir para ejecutar la comparativa de rendimiento entre ambas versiones bajo condiciones idénticas de infraestructura local o en contenedores simulando el entorno de Railway.
+
+### 8.1. Métricas Clave a Medir
+1. **RPS (Requests Per Second / Throughput):** Volumen máximo de peticiones atendidas por segundo antes de degradación.
+2. **Latencia (p50, p95, p99):** Tiempos de respuesta percibidos por el cliente (especialmente la cola de alta latencia p99).
+3. **Huella de Memoria RAM (RSS):**
+   * *RAM en reposo (Idle)* tras el arranque sin tráfico.
+   * *RAM en pico* durante ráfagas de 500 – 1,000 conexiones concurrentes.
+4. **Consumo de CPU (% vCPU):** Eficiencia por cada 1,000 peticiones procesadas.
+5. **Estabilidad del Connection Pool:** Monitoreo de conexiones activas a PostgreSQL y Redis (detección de fugas o checkout innecesario).
+
+---
+
+### 8.2. Preparación del Entorno de Pruebas
+
+Ambas pruebas deben ejecutarse contra los mismos servicios de soporte orquestados por Docker Compose:
+
+```bash
+# 1. Iniciar PostgreSQL, PgBouncer y Redis
+docker-compose up -d
+
+# 2. Iniciar el microservicio mock de prueba (en puerto 8001)
+# Puede utilizarse el mock existente en gateway-python/debug/mock_ventas.py
+```
+
+---
+
+### 8.3. Escenarios de Prueba a Ejecutar
+
+#### 🔹 Escenario 1: Overhead Base del Framework (Ruta Pública `/health`)
+* **Propósito:** Medir la latencia inherente del framework/runtime sin intervenir base de datos ni autenticación.
+* **Herramienta sugerida:** `autocannon` o `wrk`.
+* **Carga:** 100 conexiones concurrentes durante 30 segundos.
+* **Comando:**
+  ```bash
+  # Instalar autocannon globalmente (requiere Node): npm install -g autocannon
+  autocannon -c 100 -d 30s http://127.0.0.1:8000/health
+  ```
+* **Qué observar:** Throughput máximo y latencia p99. Go debería mostrar latencias <1ms y 15,000+ RPS, mientras que Python rondará 2,000–3,500 RPS con 5–15ms de latencia.
+
+---
+
+#### 🔹 Escenario 2: Estrés de Autenticación y Cómputo CPU (`POST /auth/login`)
+* **Propósito:** Evaluar el impacto del algoritmo PBKDF2 (29,000 iteraciones) y la emisión de tokens JWT.
+* **Carga:** 20 conexiones concurrentes realizando logins continuos.
+* **Herramienta:** Script de estrés existente o herramienta HTTP:
+  ```bash
+  # Ejecutar script de login concurrente:
+  python gateway-python/debug/stress_test_login.py
+  ```
+* **Qué observar:**
+  * En Python: El proceso Uvicorn saturará el 100% de 1 núcleo de CPU debido al GIL.
+  * En Go: El runtime distribuirá el cómputo de PBKDF2 entre todos los núcleos de CPU disponibles mediante goroutines sin bloquear el servicio.
+
+---
+
+#### 🔹 Escenario 3: Flujo Real de Reverse Proxying Autenticado
+* **Propósito:** Evaluar la cadena completa: Validación de Token JWT -> Verificación de Sesión en Redis -> Forwarding HTTP al microservicio -> Retorno al cliente.
+* **Flujo:**
+  1. Obtener un token JWT válido de usuario.
+  2. Lanzar peticiones concurrentes a un endpoint proxy (ej. `GET /ventas/health` o `GET /shop/items`).
+* **Herramienta:**
+  ```bash
+  python gateway-python/debug/stress_test_proxy.py
+  ```
+* **Qué observar:**
+  * **Comportamiento en PostgreSQL:** Verificar en `pg_stat_activity` que Go **no** adquiere conexiones a PostgreSQL tras el login inicial (utiliza exclusivamente Redis), mientras que Python incrementa el pool de conexiones en cada petición.
+
+---
+
+#### 🔹 Escenario 4: Pruebas con Payloads Grandes (Verificación de Memoria y OOM)
+* **Propósito:** Comprobar empíricamente que Go no sufre del pico de RAM por buffering en `GET`.
+* **Procedimiento:**
+  1. Configurar un microservicio mock que retorne una respuesta JSON de 10 MB.
+  2. Enviar 50 peticiones simultáneas descargando dicho payload a través del Gateway.
+  3. Monitorear el consumo de memoria en tiempo real:
+     ```bash
+     # En Windows PowerShell para monitorear el proceso:
+     Get-Process -Name *uvicorn*, *python*, *gateway* | Select-Object ProcessName, WS, PM
+     ```
+* **Resultado esperado:**
+  * Python elevará su consumo de RAM en cientos de megabytes (duplicación de buffers de strings y bytes en memoria para la caché de Redis).
+  * Go mantendrá una memoria plana y estable gracias a `MaxCacheableBodySize = 1 MB` y al streaming nativo de `httputil.ReverseProxy`.
+
+---
+
+### 8.4. Plantilla de Registro de Resultados
+
+| Métrica Evaluada | Python 3.13 (FastAPI) | Go 1.24 (`gateway-go`) | Diferencia / Factor |
+| :--- | :--- | :--- | :--- |
+| **RAM en Reposo (Idle)** | _(ej. 92 MB)_ | _(ej. 18 MB)_ | **-80% de consumo fijo** |
+| **RAM en Pico (Carga)** | _(ej. 280 MB)_ | _(ej. 35 MB)_ | **-87% de memoria** |
+| **Throughput `/health` (RPS)** | _(ej. 3,100 req/s)_ | _(ej. 38,000 req/s)_ | **~12x superior** |
+| **Latencia p50 (Proxy)** | _(ej. 6.2 ms)_ | _(ej. 0.6 ms)_ | **~10x más rápido** |
+| **Latencia p99 (Proxy)** | _(ej. 24.5 ms)_ | _(ej. 1.8 ms)_ | **Estabilidad superior** |
+| **Conexiones a BD en Proxy** | 1 por petición | 0 (Usa Redis) | **Cero impacto en BD** |
+
+---
+
+## 9. Próximos Pasos a Seguir (Next Steps / Roadmap)
+
+1. **Actualización de Documentación Global del Repositorio:**
+   * Actualizar el [`README.md`](README.md) en la raíz para reflejar la estructura dual del proyecto (`gateway-python/` y `gateway-go/`), la infraestructura compartida con Docker Compose (PostgreSQL 16, PgBouncer, Redis 7) y las instrucciones de ejecución y testing para cada versión.
+   * Actualizar [`SPEC_API_GATEWAY_AUTH.md`](SPEC_API_GATEWAY_AUTH.md) para reflejar la Fase 5: adopción del Gateway en Go como punto de entrada de producción.
+2. **Ejecución del Benchmarking Comparativo:**
+   * Levantar servicios de soporte (`docker-compose up -d`).
+   * Ejecutar los 4 escenarios de prueba documentados en la Sección 8 para registrar datos empíricos de RPS, latencia p50/p99 y consumo de memoria RAM.
+3. **Perfilado Detallado de Memoria y CPU (Profiling):**
+   * Emplear `net/http/pprof` en Go para auditar asignaciones de memoria en heap bajo 10,000 req/s.
+   * Comparar contra el Garbage Collector y fragmentación de memoria de Python.
+4. **Despliegue y Validación en Railway:**
+   * Desplegar la imagen de `gateway-go/Dockerfile` en Railway conectada a PostgreSQL y Redis en la nube.
+   * Configurar variables de entorno y validar reducción efectiva de costes de facturación en el dashboard de Railway.
+
+

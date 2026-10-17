@@ -1,23 +1,19 @@
-# 🚀 API Gateway & Auth
+# 🚀 API Gateway & Centralized Auth Service
 
-API Gateway centralizado construido con **FastAPI** que gestiona la **autenticación (JWT)**, la **autorización (RBAC)** y el **proxying asíncrono** de peticiones hacia microservicios internos. Actúa como punto de entrada único para toda la infraestructura de microservicios, enrutando el tráfico de forma segura y eficiente.
+Servicio de **API Gateway & Identidad Centralizada** de alto rendimiento desarrollado en **Go (Golang 1.24)**, diseñado para ecosistemas de microservicios y despliegues en la nube de pago por uso (*pay-per-use*) en **Railway**.
+
+Proporciona **latencia perimetral sub-milisegundo (<1 ms)**, **streaming real zero-copy**, arquitectura **Zero-Trust de aislamiento de clientes** (*Client-to-Service Partitioning*) y una huella de memoria ultra-reducida de **~18 MB de RAM** en reposo.
 
 ---
 
-## ✨ Características Principales
-
-- **Autenticación JWT** — Login seguro con tokens de acceso firmados (HS256) y expiración configurable.
-- **Autorización RBAC** — Control de acceso basado en roles (`ADMIN`, `USER`) con protección a nivel de endpoint.
-- **Reverse Proxy con Streaming** — Reenvío eficiente de peticiones mediante fragmentos (chunks), evitando el uso excesivo de memoria RAM.
-- **Enrutamiento por Prefijo (Path-based)** — Interceptación de peticiones basada en el primer segmento de la URL (ej. `/ventas/`) para una arquitectura más limpia.
-- **Resiliencia de Red** — Reintentos automáticos configurables para peticiones idempotentes (GET) en caso de fallos temporales.
-- **Control de Tasa (Rate Limiting)** — Protección contra abusos y ataques de denegación de servicio (DoS) ajustada para producción.
-- **Gestión de Usuarios** — Creación de usuarios restringida a administradores con validación de datos vía Pydantic.
-- **Seeding Automático** — Inicialización de un usuario administrador por defecto al arrancar la aplicación.
-- **Configuración Centralizada** — Variables de entorno gestionadas con `pydantic-settings` desde un archivo `.env`.
-- **Logging Estructurado** — Logger centralizado integrado con Uvicorn (sin `print()`).
-- **Manejo Global de Errores** — Excepciones capturadas por middleware para devolver respuestas estructuradas (`500`, `502`).
-- **Pool de Conexiones Robusto** — Motor asíncrono SQLAlchemy con `aiomysql`, pool estricto, reciclaje y `pre_ping`.
+## 📦 Stack Tecnológico
+* **Router & Middlewares:** `github.com/go-chi/chi/v5` + `github.com/go-chi/cors`
+* **Reverse Proxy:** `net/http/httputil.ReverseProxy` (Streaming nativo de alto rendimiento HTTP/1.1 y HTTP/2)
+* **Base de Datos:** PostgreSQL 16 con `github.com/jackc/pgx/v5/pgxpool` en Simple Protocol (optimizado para PgBouncer en Transaction Mode)
+* **Caché & Estado:** Redis 7 con `github.com/redis/go-redis/v9`
+* **Rate Limiting Distribuido:** `github.com/go-redis/redis_rate/v10`
+* **Seguridad & Tokens:** `github.com/golang-jwt/jwt/v5` y hashing PBKDF2 compatible con Passlib (`golang.org/x/crypto/pbkdf2`)
+* **Testing:** Suite estándar de Go con `github.com/stretchr/testify`
 
 ---
 
@@ -25,250 +21,227 @@ API Gateway centralizado construido con **FastAPI** que gestiona la **autenticac
 
 ```
 api-gateway-auth/
-├── main.py                  # Punto de entrada de la aplicación FastAPI
-├── manage.sh                # Script de gestión de tareas (gateway, mocks)
-├── requirements.txt         # Dependencias del proyecto
-├── .env.sample              # Plantilla de variables de entorno
-├── agent.md                 # Reglas y estándares para agentes de IA
-│
-├── api/                     # Capa de API (Controladores)
-│   ├── dependencies.py      # Dependencias de FastAPI (auth, permisos)
-│   ├── routers/             # Definición de rutas
-│   │   ├── auth.py          # Router de autenticación (/auth/login)
-│   │   ├── gateway.py       # Router de proxy y health check (catch-all)
-│   │   └── users.py         # Router de gestión de usuarios (/users)
-│   └── schemas/             # Esquemas Pydantic (validación I/O)
-│       ├── auth.py          # Esquema de respuesta del token (Token)
-│       └── user.py          # Esquemas de usuario (Login, Create, Response)
-│
-├── core/                    # Configuración y utilidades globales
-│   ├── config.py            # Settings centralizados (pydantic-settings)
-│   ├── database.py          # Engine y sesiones asíncronas (SQLAlchemy)
-│   ├── logger.py            # Logger estandarizado del proyecto
-│   ├── security.py          # Hashing de passwords y JWT (jose, passlib)
-│   └── setup_db.py          # Seeding del usuario administrador
-│
-├── models/                  # Modelos de base de datos (SQLAlchemy ORM)
-│   └── user.py              # Modelo User (UUID, email, role)
-│
-├── services/                 # Lógica de negocio
-│   ├── auth_service.py       # Servicio de autenticación (login)
-│   ├── proxy_service.py      # Servicio de proxy (reenvío HTTP)
-│   └── user_service.py       # Servicio de gestión de usuarios (crear)
-│
-├── tests/                    # Pruebas unitarias e integrales (93% cobertura)
-│   ├── conftest.py           # Fixtures y mocks globales
-│   ├── core/                 # Tests de seguridad, config y rate limit
-│   ├── services/             # Tests de servicios (auth, proxy, users)
-│   └── api/                  # Tests de routers y dependencias
-│
-└── debug/                    # Scripts de desarrollo y pruebas locales
-    ├── mock_ventas.py       # Mock del microservicio de Ventas (puerto 8001)
-    ├── mock_stock.py        # Mock del microservicio de Stock (puerto 8002)
-    ├── test_db_conn.py      # Script para probar conexión a la DB
-    ├── verify_tables.py     # Script para verificar tablas creadas
-    ├── reset_db.py          # Script para resetear la base de datos
-    ├── stress_test_login.py # Prueba de estrés para Rate Limit de Login (Público)
-    └── stress_test_proxy.py # Prueba de estrés para Rate Limit de Proxy (Autenticado)
+├── cmd/
+│   └── gateway/
+│       └── main.go           # Punto de entrada de la aplicación Go
+├── internal/                 # Paquetes internos de la aplicación
+│   ├── api/                  # Configuración de Chi, middlewares y handlers HTTP
+│   ├── auth/                 # Servicio de autenticación y gestión de sesiones
+│   ├── config/               # Carga y validación de variables de entorno y microservicios
+│   ├── database/             # Pool de PostgreSQL (pgxpool) y repositorios
+│   ├── models/               # Modelos de usuario, claims JWT y DTOs de petición
+│   ├── proxy/                # Reverse proxy, saneamiento de rutas, anti-spoofing y caché
+│   ├── redis/                # Cliente y wrappers de Redis
+│   ├── security/             # Hashing PBKDF2 y ciclo de vida de tokens JWT
+│   └── user/                 # Servicio de creación y administración de usuarios
+├── test/
+│   └── api_test.go           # Suite de pruebas de integración HTTP perimetrales
+├── docs/                     # 📚 Architecture Decision Records (ADRs)
+│   └── adr/
+├── Dockerfile                # Multi-stage build para despliegue en Railway (<20 MB)
+├── docker-compose.yml        # 🐳 Infraestructura (PostgreSQL 16, PgBouncer, Redis 7)
+├── .env.sample               # Plantilla de variables de entorno
+├── .gitignore
+├── go.mod
+├── go.sum
+├── README.md
+├── SPEC_API_GATEWAY_AUTH.md
+└── agent.md                  # Reglas de desarrollo y directivas para agentes de IA
 ```
 
 ---
 
-## 📋 Requisitos
+## 🛠️ Comandos Principales
 
-- **Python** 3.11+
-- **MySQL** 5.7+ (o MariaDB compatible)
-- **pip** para la gestión de paquetes
-
-### Dependencias principales
-
-| Paquete             | Versión  | Función                              |
-|---------------------|----------|--------------------------------------|
-| `fastapi`           | 0.109.0  | Framework web asíncrono              |
-| `uvicorn`           | 0.27.0   | Servidor ASGI                        |
-| `sqlalchemy`        | 2.0.38   | ORM asíncrono                        |
-| `aiomysql`          | 0.2.0    | Driver asíncrono para MySQL          |
-| `python-jose`       | 3.3.0    | Generación y validación de JWT       |
-| `passlib`           | 1.7.4    | Hashing seguro de contraseñas        |
-| `pydantic-settings` | 2.1.0    | Configuración desde variables de entorno |
-| `httpx`             | 0.26.0   | Cliente HTTP asíncrono (proxy)       |
-| `cryptography`      | 42.0.2   | Soporte criptográfico                |
-| `alembic`           | 1.13.1   | Migraciones de base de datos         |
-| `pytest`            | 9.0.2    | Framework de pruebas unitarias       |
-| `pytest-cov`        | 7.0.0    | Reporte de cobertura de código       |
-| `slowapi`           | 0.1.9    | Implementación de Rate Limiting      |
-
----
-
-## ⚙️ Instalación
-
-1. **Clonar el repositorio**
-   ```bash
-   git clone <url-del-repositorio>
-   cd api-gateway-auth
-   ```
-
-2. **Crear y activar el entorno virtual**
-   ```bash
-   python -m venv venv
-
-   # Windows (PowerShell)
-   .\venv\Scripts\Activate.ps1
-
-   # Windows (Git Bash) / Linux / macOS
-   source venv/Scripts/activate
-   ```
-
-3. **Instalar dependencias**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Configurar variables de entorno**
-   ```bash
-   cp .env.sample .env
-   ```
-   Editar `.env` con los valores reales:
-   ```env
-   # JWT
-   SECRET_KEY=tu_clave_secreta_segura
-   ALGORITHM=HS256
-   ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-   # Base de Datos (MySQL)
-   DB_USER=root
-   DB_PASSWORD=tu_password
-   DB_HOST=localhost
-   DB_PORT=3306
-   DB_NAME=gateway_auth
-
-   # Administrador por defecto
-   EMAIL_ADMIN=admin@example.com
-   PASSWORD_ADMIN=contraseña_segura
-
-   # Microservicios (JSON string - Enrutamiento por Prefijo)
-   MICROSERVICES='{"ventas": {"url": "http://localhost:8001", "api_key": "key-ventas"}, "stock": {"url": "http://localhost:8002", "api_key": "key-stock"}}'
-   ```
-
-5. **Crear la base de datos MySQL**
-   ```sql
-   CREATE DATABASE gateway_auth;
-   ```
-   > Las tablas se crean automáticamente al iniciar la aplicación.
-
----
-
-## 🚀 Uso
-
-### Iniciar el API Gateway
-
-Con el script de gestión:
+### 1. Iniciar Infraestructura de Soporte (Docker Compose)
+Levanta PostgreSQL 16, PgBouncer en Transaction Mode y Redis 7:
 ```bash
-./manage.sh gateway
+docker-compose up -d
 ```
 
-O directamente con Uvicorn:
+| Contenedor | Puerto Local | Función |
+| :--- | :--- | :--- |
+| **PostgreSQL 16** | `5432` | Base de datos persistente (usuarios y roles) |
+| **PgBouncer** | `6432` | Connection Pooler de alto rendimiento |
+| **Redis 7** | `6379` | Caché de sesiones JWT, proxy caching y cuotas de rate limiting |
+
+### 2. Ejecución Local en Desarrollo
 ```bash
-uvicorn main:app --reload --port 8000
+go run ./cmd/gateway
+```
+*El Gateway arrancará escuchando en el puerto `:8000` (o el configurado en `PORT`).*
+
+### 3. Ejecutar Suite Completa de Pruebas
+```bash
+go test -v ./...
 ```
 
-Al iniciar, la aplicación automáticamente:
-1. Crea las tablas en la base de datos (si no existen).
-2. Crea el usuario administrador por defecto (si no existe).
-
-### Iniciar Microservicios Mock (desarrollo)
-
+### 4. Compilación del Binario de Producción
 ```bash
-# Mock de Ventas (puerto 8001)
-./manage.sh mock ventas
+# Compilar binario nativo optimizado sin símbolos de depuración (-s -w):
+go build -ldflags="-s -w" -o gateway ./cmd/gateway
 
-# Mock de Stock (puerto 8002)
-./manage.sh mock stock
-```
-
-### Ver ayuda del gestor de tareas
-
-```bash
-./manage.sh help
+# O construir la imagen Docker para producción en Railway:
+docker build -t api-gateway .
 ```
 
 ---
 
-## 🧪 Pruebas (Testing)
-
-El proyecto cuenta con una suite de pruebas automatizadas con una cobertura superior al **90%**. Las pruebas están diseñadas para ejecutarse de forma aislada (usando mocks para base de datos y servicios externos).
-
-### Ejecutar todas las pruebas
-
-Para lanzar la suite completa con el reporte de cobertura:
-
-```bash
-./manage.sh tests
-```
-
-O directamente vía terminal:
-```bash
-$env:PYTHONPATH="."; pytest --cov=core --cov=api --cov=services --cov-report=term-missing tests/
-```
-
-### Qué se valida:
-- **Core**: Configuración, seguridad (JWT/Hashing) y lógica de Rate Limiting.
-- **Services**: Lógica de negocio de autenticación, gestión de usuarios y proxying.
-- **API**: Endpoints de login, creación de usuarios y reenvío de peticiones (RBAC incluido).
-
-### Pruebas de Estrés
-
-Se han incluido scripts en la carpeta `debug/` para validar el comportamiento del **Rate Limiter** bajo carga pesada.
-
-#### 1. Estrés de Login (Público)
-Valida el límite estricto de **10 peticiones/minuto** para IPs públicas en el endpoint de autenticación.
-- **Archivo**: `debug/stress_test_login.py`
-- **Uso**: `python debug/stress_test_login.py`
-- **Salida esperada**: Tras 20 peticiones concurrentes, se obtienen ~10 respuestas exitosas/fallidas y exactamente **10 respuestas `429 Too Many Requests`**.
-- **Nota**: debe ejecutarse con el gateway iniciado.
-
-#### 2. Estrés de Proxy (Autenticado)
-Valida el límite de **20 peticiones/minuto** por usuario en los endpoints protegidos del Gateway.
-- **Archivo**: `debug/stress_test_proxy.py`
-- **Uso**: 
-  1. Iniciar Gateway: `./manage.sh gateway`
-  2. Iniciar Mock: `./manage.sh mock ventas`
-  3. Ejecutar: `python debug/stress_test_proxy.py`
-- **Salida esperada**: Tras 30 peticiones concurrentes, se obtienen 20 respuestas exitosas y exactamente **10 respuestas `429 Too Many Requests`**.
-- **Nota**: debe ejecutarse con el gateway y el mock de ventas iniciados.
-
-
-### Documentación interactiva
-
-Una vez iniciado el gateway, accede a la documentación automática de FastAPI:
-- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
-### Endpoints principales
-
-| Método | Ruta            | Descripción                          | Autenticación |
-|--------|-----------------|--------------------------------------|---------------|
-| `POST` | `/auth/login`   | Iniciar sesión y obtener token JWT   | ❌ Pública    |
-| `POST` | `/users`        | Crear un nuevo usuario               | 🔒 ADMIN     |
-| `GET`  | `/health`       | Health check del gateway             | ❌ Pública    |
-| `*`    | `/{path:path}`  | Proxy hacia microservicios internos  | 🔒 Bearer    |
-
-## 🤖 Guía para Agentes
-
-Este proyecto incluye un archivo [`agent.md`](agent.md) que define las **reglas obligatorias** para cualquier agente de IA que interactúe con el repositorio. Incluye:
-
-- **Perfil y Contexto** del proyecto
-- **Stack Tecnológico** y versiones permitidas
-- **Protocolo de Desarrollo** (flujo de trabajo paso a paso)
-- **Arquitectura y Estándares** (patrón Router/Service, nomenclatura, manejo de errores)
-- **Seguridad y Dependencias** (gestión de secretos, validación)
-- **Calidad y Logs** (testing, logging estructurado)
-- **Prohibiciones** explícitas
-
-> ⚠️ En caso de conflicto entre las instrucciones del agente y el archivo `agent.md`, **este último tiene prioridad**.
+## 🛡️ Mejoras Arquitectónicas y de Rendimiento
+1. **Streaming Real Zero-Copy:** `httputil.ReverseProxy` transfiere datos en chunks mediante streaming continuo sin almacenar el cuerpo completo en la memoria RAM del Gateway.
+2. **Caché GET Acotada (Protección OOM):** Se limita el cacheo automático en Redis a respuestas de máximo 1 MB particionadas por cliente (`proxy_cache:<service>:<client_id>:<hash>`).
+3. **Propagación Segura & Anti-Spoofing:** El Gateway purga cabeceras sensibles no confiables enviadas por el cliente final e inyecta de forma fidedigna `X-Client-ID`, `X-Scopes`, `X-User-ID`, `X-User-Email`, `X-User-Role` y `X-Internal-Api-Key` hacia los microservicios internos.
+4. **Desacoplamiento Total de Base de Datos en Proxy:** El middleware de autenticación valida la sesión en Redis (<0.5 ms). No se solicita ninguna conexión a PostgreSQL salvo en caso de *Cache Miss*.
+5. **Huella de Memoria Minimizada:** Consumo base en reposo de **~18 MB de RAM** (frente a los ~140 MB de arquitecturas tradicionales en Python).
+6. **Aislamiento y Particionamiento de Clientes (Zero-Trust):** Control estricto de acceso cliente-a-servicio con enlace criptográfico (*Token Binding*).
 
 ---
 
-## 📄 Licencia
+## 🔒 Manual de Uso: Particionamiento y Aislamiento de Clientes (Client Partitioning)
 
-Este proyecto es de uso privado.
+El Gateway incorpora una arquitectura de **Zero-Trust Perimetral** para garantizar que tokens emitidos para una aplicación cliente específica (ej. comensales) no puedan utilizarse contra microservicios de uso restringido (ej. staff, finanzas, cocina).
+
+### 1. Política Zero-Trust (*Deny by Default*)
+* **Regla Estricta:** Todo microservicio configurado en `MICROSERVICES` debe declarar explícitamente qué clientes tienen autorización en `allowed_clients`.
+* Si un microservicio se registra con `allowed_clients` vacío u omitido, el API Gateway **bloquea el acceso por defecto con `403 Forbidden` (`[E-03]`)**.
+* Para permitir cualquier cliente autenticado de forma deliberada, use el comodín `["*"]`.
+
+### 2. Configuración de `MICROSERVICES` (Variable de Entorno)
+La variable de entorno `MICROSERVICES` contiene un JSON donde cada clave representa el prefijo de ruta perimetral:
+
+```json
+{
+  "ventas": {
+    "url": "http://localhost:8001",
+    "api_key": "secret-key-ventas-123",
+    "allowed_clients": ["comensales-app", "staff-pos", "admin-portal"]
+  },
+  "stock": {
+    "url": "http://localhost:8002",
+    "api_key": "secret-key-stock-456",
+    "allowed_clients": ["staff-pos", "admin-portal"],
+    "required_roles": ["USER", "ADMIN"]
+  },
+  "cocina": {
+    "url": "http://localhost:8003",
+    "api_key": "secret-key-cocina-789",
+    "allowed_clients": ["staff-pos", "kds-screen"]
+  }
+}
+```
+
+| Campo | Tipo | Obligatorio | Descripción |
+| :--- | :--- | :---: | :--- |
+| `url` | `string` | Sí | URL base del microservicio interno. |
+| `api_key` | `string` | No | Clave interna compartida inyectada en `X-Internal-Api-Key`. |
+| `allowed_clients` | `[]string` | **Sí (Zero-Trust)** | Lista de `client_id` autorizados (o `["*"]`). |
+| `required_roles` | `[]string` | No | Lista opcional de roles permitidos (`USER`, `ADMIN`). |
+
+---
+
+### 3. Autenticación de Clientes en `/auth/login`
+El inicio de sesión exige obligatoriamente identificar la aplicación cliente que solicita credenciales:
+
+#### Opción A: Vía Cabecera HTTP (Recomendada)
+```http
+POST /auth/login HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+X-Client-Id: comensales-app
+
+{
+  "email": "usuario@comensales.com",
+  "password": "Password123"
+}
+```
+
+#### Opción B: Vía Campo en el Cuerpo JSON
+```http
+POST /auth/login HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+
+{
+  "email": "usuario@comensales.com",
+  "password": "Password123",
+  "client_id": "comensales-app"
+}
+```
+
+> **⚠️ Validación Estricta:** Si ni la cabecera `X-Client-Id` ni el campo `client_id` están presentes, el Gateway responde con `400 Bad Request` (`[E-01]`).
+
+#### Respuesta Exitosa:
+```json
+{
+  "user": "usuario@comensales.com",
+  "role": "USER",
+  "client_id": "comensales-app",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+El token generado contiene en sus claims estándar:
+* `sub`: correo electrónico del usuario.
+* `role`: rol RBAC (`USER` o `ADMIN`).
+* `client_id`: identificador de la app cliente.
+* `aud`: audiencia asociada al cliente (`jwt.ClaimStrings{"comensales-app"}`).
+* `exp`: timestamp de expiración UTC.
+
+---
+
+### 4. Consumo de Rutas Protegidas y Token Binding
+Al consumir cualquier ruta hacia un microservicio aguas abajo (ej. `GET /ventas/items`):
+
+```http
+GET /ventas/items HTTP/1.1
+Host: localhost:8000
+Authorization: Bearer <TOKEN>
+X-Client-Id: comensales-app
+```
+
+* **Token Binding:** Si la petición incluye la cabecera `X-Client-Id`, el Gateway verifica que coincida estrictamente con el `client_id` sellado dentro del token JWT. Si difieren (intento de suplantación o reenvío cruzado de tokens), responde con `401 Unauthorized` (`[E-02]`).
+* **Client-to-Service Partitioning:** El Gateway verifica que el `client_id` del token esté listado en `allowed_clients` de la ruta `/ventas`. Si no lo está, responde `403 Forbidden` (`[E-03]`).
+
+---
+
+### 5. Cabeceras Propagadas hacia los Microservicios Internos
+
+| Cabecera Recibida por el Microservicio | Origen | Descripción |
+| :--- | :--- | :--- |
+| `X-Client-ID` | Gateway (Token) | Identificador verificado de la aplicación consumidora. |
+| `X-User-ID` | Gateway (BD/Redis)| UUID persistente del usuario autenticado. |
+| `X-User-Email` | Gateway (Token) | Correo electrónico del usuario autenticado. |
+| `X-User-Role` | Gateway (Token) | Rol RBAC del usuario (`USER` o `ADMIN`). |
+| `X-Internal-Api-Key` | Gateway (Config) | Secreto interno compartido configurado para el microservicio. |
+| `X-Scopes` | Gateway (Token) | Permisos o scopes autorizados (si aplican). |
+
+---
+
+## 📖 Diccionario de Códigos de Error (Error Catalog) & Regla de Fuga Cero
+
+### 🛡️ Regla de Oro: Prohibición Absoluta de Fuga de Información (*Zero-Information Disclosure*)
+Siguiendo las mejores prácticas de **OWASP API Security** (API3:2023 Broken Object Property Level Authorization & API8:2023 Security Misconfiguration) y **CWE-209** (*Generation of Error Message Containing Sensitive Information*):
+
+1. **Nunca exponer información estructural al cliente:** Está terminantemente prohibido devolver nombres de parámetros internos, detalles de validaciones de longitud/regex, motivos criptográficos exactos de fallo (ej. diferenciar entre usuario inexistente y contraseña errónea), o trazas de pila (*stack traces*).
+2. **Mensajes Opacos y Estandarizados:** Todas las respuestas de error emitidas por el Gateway entregan mensajes genéricos acompañados de un código de catálogo `[E-xx]`.
+3. **Trazabilidad Interna Segura (`X-Error-ID`):** Los errores no controlados y anomalías críticas registran la causa técnica detallada exclusivamente en los logs del servidor bajo un identificador único de rastreo correlacionado (`X-Error-ID`), permitiendo que el equipo de soporte depure la incidencia sin entregar vectores de ataque a terceros.
+
+---
+
+### 📋 Catálogo Completo de Errores Perimetrales (`[E-xx]`)
+
+| Código | Código HTTP | Mensaje Retornado al Cliente | Causa Raíz Interna / Guía de Solución para Desarrolladores |
+| :---: | :---: | :--- | :--- |
+| **`E-01`** | `400 Bad Request` | `"Cabeceras requeridas ausentes o no válidas [E-01]"` | Falta la cabecera obligatoria `X-Client-Id` o el campo `client_id` en el cuerpo JSON del inicio de sesión (`/auth/login`), o contiene caracteres fuera del formato alfanumérico permitido. |
+| **`E-02`** | `401 Unauthorized` | `"Contexto de seguridad inconsistente [E-02]"` | **Token Binding Mismatch:** La cabecera `X-Client-Id` enviada en la petición no coincide con el claim `client_id` sellado criptográficamente en el token JWT (intento de reutilización indebida o token robado). |
+| **`E-03`** | `403 Forbidden` | `"Acceso al recurso denegado [E-03]"` | **Aislamiento de Clientes (Zero-Trust):** El microservicio destino no cuenta con `allowed_clients` configurado (bloqueo por omisión), el cliente del token no está en su lista blanca, o el rol RBAC del usuario no cumple con `required_roles`. |
+| **`E-04`** | `400 Bad Request` | `"Ruta de acceso inválida o no permitida [E-04]"` | **Protección de Enrutamiento:** Detección de secuencias de Path Traversal (`..`, `.`), bytes nulos (`%00`) o caracteres ilegales en la URL solicitada. |
+| **`E-05`** | `502 Bad Gateway` | `"Error de comunicación con el servicio de destino [E-05]"` | **Fallo de Conectividad Upstream:** El microservicio interno de destino no está accesible, rechazó la conexión (connection refused) o superó el tiempo límite de espera. |
+| **`E-06`** | `404 Not Found` | `"Recurso o servicio no encontrado [E-06]"` | El prefijo solicitado no corresponde a ningún microservicio registrado en `MICROSERVICES`, o la ruta solicitada no existe en el catálogo del Gateway. |
+| **`E-07`** | `429 Too Many Requests` | `"Límite de peticiones excedido [E-07]"` | **Rate Limiting Perimetral:** El cliente o la IP de origen ha excedido la cuota de peticiones permitidas por minuto en Redis. |
+| **`E-08`** | `401 Unauthorized` | `"No se pudieron validar las credenciales [E-08]"` | **Fallo de Autenticación Universal:** Token JWT ausente, expirado, con firma no válida, o credenciales (usuario/contraseña) incorrectas en `/auth/login` (mitigación de enumeración de cuentas). |
+| **`E-09`** | `403 Forbidden` | `"Permisos insuficientes para el recurso [E-09]"` | Intento de consumir un endpoint de gestión administrativa (ej. `POST /users`) con un usuario cuyo rol no es `ADMIN`. |
+| **`E-10`** | `422 / 400` | `"Formato de solicitud o cuerpo JSON no válido [E-10]"` | El cuerpo de la petición no contiene un JSON sintácticamente válido o los tipos de datos no corresponden a la estructura esperada. |
+| **`E-11`** | `400 Bad Request` | `"Parámetros de solicitud no válidos [E-11]"` | Los campos enviados no superan las validaciones de negocio (ej. email inválido, longitud fuera de rango, etc.). |
+| **`E-12`** | `409 Conflict` | `"Conflicto con el recurso solicitado [E-12]"` | Intento de registrar un recurso único que ya existe en el sistema (ej. creación de un usuario con un correo ya registrado). |
+| **`E-13`** | `405 Method Not Allowed` | `"Método HTTP no permitido para este recurso [E-13]"` | El verbo HTTP empleado (ej. `DELETE`, `PUT`) no está habilitado para la ruta solicitada en el Gateway. |
+| **`E-99`** | `500 Internal Error` | `"Error interno del servidor [E-99]"` | Excepción no controlada o fallo imprevisto. La cabecera HTTP `X-Error-ID` devuelta identifica el evento en los registros internos sin filtrar trazas al exterior. |

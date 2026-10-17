@@ -19,22 +19,23 @@ Sus responsabilidades fundamentales son:
 ## 2. Arquitectura y Estado Actual (Current Architecture State)
 
 ### Stack Tecnológico
-*   **Core:** Python 3.11+, FastAPI (Framework web asíncrono).
-*   **Base de Datos:** MySQL / MariaDB mediante `SQLAlchemy` (ORM) y `aiomysql` (driver asíncrono).
-*   **Seguridad:** `python-jose` (JWT), `passlib` con `pbkdf2_sha256` (Hashing), `slowapi` (Rate Limiting).
-*   **Proxying:** `httpx` (Cliente HTTP asíncrono con soporte de streaming).
+*   **Core:** Go 1.24+, Chi (`github.com/go-chi/chi/v5`).
+*   **Base de Datos:** PostgreSQL 16 mediante `pgxpool` (`github.com/jackc/pgx/v5/pgxpool`) en Simple Protocol para PgBouncer.
+*   **Caché & Estado:** Redis 7 mediante `go-redis/v9` y `redis_rate/v10`.
+*   **Seguridad:** `golang-jwt/jwt/v5`, PBKDF2 (`golang.org/x/crypto/pbkdf2`), Zero-Trust Client Partitioning.
+*   **Proxying:** `net/http/httputil.ReverseProxy` con streaming zero-copy nativo.
 
 ### Patrones de Diseño
-*   **Router -> Service:** Separación clara entre la capa de red/transporte (`api/routers/`) y la lógica de negocio pura (`services/`).
-*   **I/O Asíncrono Non-Blocking:** Uso estricto de `async/await` para evitar el bloqueo del Event Loop durante llamadas a base de datos o microservicios.
-*   **Proxy de Streaming:** Uso de `resp.aiter_raw()` para canalizar respuestas desde los microservicios al cliente en fragmentos, evitando picos de consumo de memoria RAM en respuestas grandes.
+*   **Layered Clean Architecture:** Separación entre capa de transporte (`internal/api`), lógica (`internal/auth`, `internal/user`, `internal/proxy`) e infraestructura (`internal/database`, `internal/redis`, `internal/security`).
+*   **I/O Concurrente y Streaming Zero-Copy:** Uso de goroutines y streaming HTTP nativo con `io.LimitReader` para caché acotada en Redis (máx 1 MB).
+*   **Zero-Trust Client Partitioning & Token Binding:** Enlace criptográfico entre `X-Client-Id` y claims del token con política restrictiva deny-by-default en microservicios.
 
 ### Flujo de Petición (Request Flow)
 1. Petición entra al Gateway.
-2. Interceptada por Middleware CORS y Rate Limiter (`slowapi`).
-3. Si la ruta está protegida, pasa por `get_current_user` (Dependencia): Se valida el JWT y se hace un **Query a la Base de Datos** para verificar la existencia del usuario.
-4. Llega al Router Catch-All (`/{path:path}`).
-5. `ProxyService` limpia cabeceras, inyecta `X-Internal-Api-Key` y reenvía al microservicio objetivo.
+2. Interceptada por `Recoverer`, `CORS` y `RateLimiter` en Redis.
+3. Si la ruta está protegida, `AuthMiddleware` valida el JWT y la sesión en **Redis** (<0.5 ms), sin tocar PostgreSQL en Cache Hits.
+4. Llega al Handler Catch-All (`/*`).
+5. `proxy.Service` valida particionamiento Zero-Trust (`allowed_clients`), purga cabeceras sensibles del cliente, inyecta `X-Internal-Api-Key` y las cabeceras fidedignas (`X-Client-ID`, `X-Scopes`, `X-User-*`), y reenvía al microservicio objetivo.
 
 ---
 
@@ -97,6 +98,13 @@ Con el fin de evolucionar este Gateway hacia una arquitectura Enterprise robusta
 ### Fase 4: Observabilidad y Circuit Breaker
 *   **Tracing Distribuido:** Integración con OpenTelemetry para inyectar `Trace-IDs` en las cabeceras proxy, permitiendo seguir el recorrido de la petición en herramientas como Jaeger o Datadog.
 *   **Circuit Breaker:** Si el microservicio interno falla repetidas veces, el Gateway debe "abrir el circuito" y dejar de enviarle tráfico temporalmente (para evitar saturarlo mientras se recupera) devolviendo una respuesta *Fall-back* o un error 503 rápido.
+
+### Fase 5: Aislamiento y Particionamiento de Clientes (Zero-Trust en Go)
+*   [x] **Requerimiento Estricto de `X-Client-Id`:** Obligatoriedad de identificar el frontend emisor en `/auth/login` (rechazando peticiones anónimas con `400 Bad Request`).
+*   [x] **Token Binding:** Validación de correspondencia entre el `client_id` embebido en el JWT y la cabecera `X-Client-Id` de la petición HTTP (`401 Unauthorized` si discrepan).
+*   [x] **Zero-Trust Deny-by-Default:** Todo microservicio en `MICROSERVICES` debe declarar `allowed_clients` explícitos; los servicios sin configuración deniegan acceso perimetral con `403 Forbidden`.
+*   [x] **Propagación Segura & Anti-Spoofing:** Purgado de cabeceras de cliente no confiables e inyección fidedigna aguas abajo de `X-Client-ID`, `X-Scopes`, `X-User-ID`, `X-User-Email`, `X-User-Role` y `X-Internal-Api-Key`.
+
 
 ---
 

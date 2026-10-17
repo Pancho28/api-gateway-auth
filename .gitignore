@@ -1,11 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Go
+# Binarios y artefactos de Go
+/gateway
+/gateway.exe
 *.exe
 *.exe~
 *.dll
@@ -13,33 +8,17 @@ __pycache__/
 *.test
 *.out
 go.work
-gateway-go/gateway
-
-# Entornos Virtuales
-venv/
-env/
-ENV/
-env.bak/
-venv.bak/
 
 # Variables de entorno y secretos
 .env
 *.pem
 *.key
 
-# Bases de datos SQLite (si las hubiera en el futuro o para testing local)
+# Bases de datos y archivos de datos locales
 *.sqlite3
 *.db
 
-# Testing y Cobertura
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
-.tox/
-nosetests.xml
-
-# IDEs locales
+# IDEs y editores
 .vscode/
 .idea/
 *.swp
@@ -53,3 +32,9 @@ Thumbs.db
 *.log
 tmp/
 temp/
+
+# Cachés históricas
+__pycache__/
+venv/
+.pytest_cache/
+.coverage
