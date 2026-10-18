@@ -18,7 +18,32 @@ type ServiceConfig struct {
 	AllowedClients   []string `json:"allowed_clients"`
 	AllowedAudiences []string `json:"allowed_audiences,omitempty"`
 	RequiredRoles    []string `json:"required_roles,omitempty"`
+	PublicPaths      []string `json:"public_paths,omitempty"`
+	AllowAnonymous   bool     `json:"allow_anonymous,omitempty"`
 }
+
+// IsPathPublic determina si una sub-ruta del microservicio permite acceso público/anónimo
+func (s *ServiceConfig) IsPathPublic(subPath string) bool {
+	if s.AllowAnonymous {
+		return true
+	}
+	if len(s.PublicPaths) == 0 {
+		return false
+	}
+	cleanSubPath := "/" + strings.Trim(subPath, "/")
+	for _, p := range s.PublicPaths {
+		cleanP := strings.TrimSpace(p)
+		if cleanP == "*" || cleanP == "/*" {
+			return true
+		}
+		cleanP = "/" + strings.Trim(cleanP, "/")
+		if cleanSubPath == cleanP || strings.HasPrefix(cleanSubPath, cleanP+"/") || cleanP == "/" {
+			return true
+		}
+	}
+	return false
+}
+
 
 // IsClientAllowed verifica si un client_id tiene acceso según la lista blanca configurada
 func (s *ServiceConfig) IsClientAllowed(clientID string) bool {

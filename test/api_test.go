@@ -99,6 +99,12 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 				APIKey:         "backend-secret-api-key",
 				AllowedClients: []string{"test-client", "admin-client"},
 			},
+			"catalog": {
+				URL:            backend.URL,
+				APIKey:         "catalog-secret-api-key",
+				AllowedClients: []string{"*"},
+				PublicPaths:    []string{"/items"},
+			},
 			"unconfigured": {
 				URL:    backend.URL,
 				APIKey: "backend-secret-api-key",
@@ -367,3 +373,170 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recBindingMismatch.Code)
 	assert.Contains(t, recBindingMismatch.Body.String(), "Contexto de seguridad inconsistente [E-02]")
 }
+
+func TestAuthRegisterEndpoint(t *testing.T) {
+	router, _, _, backend := setupTestEnvironment(t)
+	defer backend.Close()
+
+	// 1. Registro sin Client-ID -> 400 Bad Request [E-01]
+	bodyNoClient, _ := json.Marshal(models.UserRegisterRequest{
+		Email:    "newguest@test.com",
+		Password: "Password123",
+	})
+	reqNoClient := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyNoClient))
+	reqNoClient.Header.Set("Content-Type", "application/json")
+	recNoClient := httptest.NewRecorder()
+	router.ServeHTTP(recNoClient, reqNoClient)
+	assert.Equal(t, http.StatusBadRequest, recNoClient.Code)
+	assert.Contains(t, recNoClient.Body.String(), "E-01")
+
+	// 2. Registro con intento de rol ADMIN en registro público -> 400 Bad Request [E-11]
+	bodyEscalation, _ := json.Marshal(models.UserRegisterRequest{
+		Email:    "hacker@test.com",
+		Password: "Password123",
+		ClientID: "web-client",
+		Role:     "ADMIN",
+	})
+	reqEscalation := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyEscalation))
+	reqEscalation.Header.Set("Content-Type", "application/json")
+	recEscalation := httptest.NewRecorder()
+	router.ServeHTTP(recEscalation, reqEscalation)
+	assert.Equal(t, http.StatusBadRequest, recEscalation.Code)
+	assert.Contains(t, recEscalation.Body.String(), "E-11")
+
+	// 3. Registro exitoso de comensal (rol CUSTOMER por defecto) -> 201 Created
+	bodyValid, _ := json.Marshal(models.UserRegisterRequest{
+		Email:    "comensal@test.com",
+		Password: "Password123",
+		ClientID: "reservas-web",
+	})
+	reqValid := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyValid))
+	reqValid.Header.Set("Content-Type", "application/json")
+	recValid := httptest.NewRecorder()
+	router.ServeHTTP(recValid, reqValid)
+
+	assert.Equal(t, http.StatusCreated, recValid.Code)
+	var tokenResp models.TokenResponse
+	err := json.Unmarshal(recValid.Body.Bytes(), &tokenResp)
+	require.NoError(t, err)
+	assert.Equal(t, "comensal@test.com", tokenResp.User)
+	assert.Equal(t, "CUSTOMER", tokenResp.Role)
+	assert.Equal(t, "reservas-web", tokenResp.ClientID)
+	assert.NotEmpty(t, tokenResp.Token)
+
+	// 4. Registro duplicado con el mismo correo -> 409 Conflict [E-12]
+	reqDuplicate := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyValid))
+	reqDuplicate.Header.Set("Content-Type", "application/json")
+	recDuplicate := httptest.NewRecorder()
+	router.ServeHTTP(recDuplicate, reqDuplicate)
+	assert.Equal(t, http.StatusConflict, recDuplicate.Code)
+	assert.Contains(t, recDuplicate.Body.String(), "E-12")
+}
+
+func TestFlexibleRolesAndAdmin(t *testing.T) {
+	router, _, cfg, backend := setupTestEnvironment(t)
+	defer backend.Close()
+
+	// Token de admin válido
+	adminToken, err := security.GenerateToken("admin@test.com", "ADMIN", "admin-client", cfg.SecretKey, 15*time.Minute)
+	require.NoError(t, err)
+
+	// 1. Admin crea usuario con rol STAFF
+	staffReq, _ := json.Marshal(models.AdminUserCreateRequest{
+		Email:    "staff1@restaurant.com",
+		Password: "StaffPassword1",
+		Role:     "STAFF",
+	})
+	reqStaff := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(staffReq))
+	reqStaff.Header.Set("Content-Type", "application/json")
+	reqStaff.Header.Set("Authorization", "Bearer "+adminToken)
+	recStaff := httptest.NewRecorder()
+	router.ServeHTTP(recStaff, reqStaff)
+	assert.Equal(t, http.StatusCreated, recStaff.Code)
+	assert.Contains(t, recStaff.Body.String(), "STAFF")
+
+	// 2. Admin crea usuario con rol SUPERADMIN
+	superAdminReq, _ := json.Marshal(models.AdminUserCreateRequest{
+		Email:    "superadmin@platform.com",
+		Password: "SuperPassword1",
+		Role:     "SUPERADMIN",
+	})
+	reqSuperAdmin := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(superAdminReq))
+	reqSuperAdmin.Header.Set("Content-Type", "application/json")
+	reqSuperAdmin.Header.Set("Authorization", "Bearer "+adminToken)
+	recSuperAdmin := httptest.NewRecorder()
+	router.ServeHTTP(recSuperAdmin, reqSuperAdmin)
+	assert.Equal(t, http.StatusCreated, recSuperAdmin.Code)
+	assert.Contains(t, recSuperAdmin.Body.String(), "SUPERADMIN")
+
+	// 3. Usuario con rol SUPERADMIN puede acceder a endpoints administrativos
+	superAdminToken, err := security.GenerateToken("superadmin@platform.com", "SUPERADMIN", "admin-client", cfg.SecretKey, 15*time.Minute)
+	require.NoError(t, err)
+
+	userBySuperReq, _ := json.Marshal(models.AdminUserCreateRequest{
+		Email:    "customer1@test.com",
+		Password: "CustomerPass1",
+		Role:     "CUSTOMER",
+	})
+	reqUserBySuper := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(userBySuperReq))
+	reqUserBySuper.Header.Set("Content-Type", "application/json")
+	reqUserBySuper.Header.Set("Authorization", "Bearer "+superAdminToken)
+	recUserBySuper := httptest.NewRecorder()
+	router.ServeHTTP(recUserBySuper, reqUserBySuper)
+	assert.Equal(t, http.StatusCreated, recUserBySuper.Code)
+}
+
+func TestPublicPathsProxying(t *testing.T) {
+	router, mockDB, cfg, backend := setupTestEnvironment(t)
+	defer backend.Close()
+
+	// Sembrar comensal de prueba en mockDB para resolución de identidad
+	mockDB.users["comensal@test.com"] = &models.User{
+		ID:    "guest-uuid-123",
+		Email: "comensal@test.com",
+		Role:  "CUSTOMER",
+	}
+
+	// 1. Acceso anónimo a sub-ruta pública (/catalog/items) sin token -> 200 OK
+	reqPublic := httptest.NewRequest(http.MethodGet, "/catalog/items", nil)
+	reqPublic.Header.Set("X-Client-Id", "reservas-web")
+	recPublic := httptest.NewRecorder()
+	router.ServeHTTP(recPublic, reqPublic)
+
+	assert.Equal(t, http.StatusOK, recPublic.Code)
+	assert.Contains(t, recPublic.Body.String(), "Item A")
+
+	headers := getLastProxyHeaders()
+	require.NotNil(t, headers)
+	assert.Equal(t, "catalog-secret-api-key", headers.Get("X-Internal-Api-Key"))
+	assert.Equal(t, "reservas-web", headers.Get("X-Client-Id"))
+	assert.Empty(t, headers.Get("X-User-ID"))
+
+	// 2. Acceso anónimo a sub-ruta no pública (/catalog/orders) sin token -> 401 Unauthorized [E-08]
+	reqPrivateNoToken := httptest.NewRequest(http.MethodGet, "/catalog/orders", nil)
+	recPrivateNoToken := httptest.NewRecorder()
+	router.ServeHTTP(recPrivateNoToken, reqPrivateNoToken)
+
+	assert.Equal(t, http.StatusUnauthorized, recPrivateNoToken.Code)
+	assert.Contains(t, recPrivateNoToken.Body.String(), "E-08")
+
+	// 3. Acceso a sub-ruta pública pero CON token válido de comensal -> 200 OK y propaga X-User-ID
+	guestToken, err := security.GenerateToken("comensal@test.com", "CUSTOMER", "reservas-web", cfg.SecretKey, 15*time.Minute)
+	require.NoError(t, err)
+
+	reqPublicWithToken := httptest.NewRequest(http.MethodGet, "/catalog/items", nil)
+	reqPublicWithToken.Header.Set("Authorization", "Bearer "+guestToken)
+	reqPublicWithToken.Header.Set("X-Client-Id", "reservas-web")
+	recPublicWithToken := httptest.NewRecorder()
+	router.ServeHTTP(recPublicWithToken, reqPublicWithToken)
+
+	assert.Equal(t, http.StatusOK, recPublicWithToken.Code)
+	headersWithUser := getLastProxyHeaders()
+	require.NotNil(t, headersWithUser)
+	assert.Equal(t, "comensal@test.com", headersWithUser.Get("X-User-Email"))
+	assert.Equal(t, "CUSTOMER", headersWithUser.Get("X-User-Role"))
+	assert.Equal(t, "reservas-web", headersWithUser.Get("X-Client-Id"))
+	assert.Equal(t, "guest-uuid-123", headersWithUser.Get("X-User-ID"))
+}
+
+

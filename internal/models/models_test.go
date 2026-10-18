@@ -43,8 +43,21 @@ func TestAdminUserCreateValidation(t *testing.T) {
 
 	// 7. Rol inválido
 	reqInvalidRole := req
-	reqInvalidRole.Role = "SUPERADMIN"
+	reqInvalidRole.Role = "INVALID_ROLE"
 	assert.Error(t, reqInvalidRole.Validate())
+
+	// 7.b Roles válidos admitidos en el ecosistema (CUSTOMER, STAFF, SUPERADMIN)
+	reqSuperRole := req
+	reqSuperRole.Role = "SUPERADMIN"
+	assert.NoError(t, reqSuperRole.Validate())
+	reqStaffRole := req
+	reqStaffRole.Role = "staff"
+	assert.NoError(t, reqStaffRole.Validate())
+	assert.Equal(t, "STAFF", reqStaffRole.Role)
+	reqCustomerRole := req
+	reqCustomerRole.Role = "customer"
+	assert.NoError(t, reqCustomerRole.Validate())
+	assert.Equal(t, "CUSTOMER", reqCustomerRole.Role)
 
 	// 8. Normalización de rol en minúsculas a mayúsculas
 	reqLowerRole := req

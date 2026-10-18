@@ -79,12 +79,20 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 		return
 	}
 
-	// 2. Particionamiento y aislamiento de clientes (Zero Trust / Deny by default - Opción B)
+	// 2. Particionamiento y aislamiento de clientes (Zero Trust / Deny by default)
+	isPublic := serviceConfig.IsPathPublic(subPath)
+	if !isPublic && currentUser == nil {
+		http.Error(w, `{"detail":"No se pudieron validar las credenciales [E-08]"}`, http.StatusUnauthorized)
+		return
+	}
+
 	clientID := ""
 	role := ""
 	if currentUser != nil {
 		clientID = currentUser.ClientID
 		role = currentUser.Role
+	} else {
+		clientID = strings.TrimSpace(r.Header.Get("X-Client-Id"))
 	}
 
 	if len(serviceConfig.AllowedClients) == 0 {
@@ -97,7 +105,7 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 		return
 	}
 
-	if len(serviceConfig.RequiredRoles) > 0 && !serviceConfig.IsRoleAllowed(role) {
+	if !isPublic && len(serviceConfig.RequiredRoles) > 0 && !serviceConfig.IsRoleAllowed(role) {
 		http.Error(w, `{"detail":"Acceso al recurso denegado [E-03]"}`, http.StatusForbidden)
 		return
 	}
@@ -166,6 +174,8 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 				if len(currentUser.Scopes) > 0 {
 					req.Header.Set("X-Scopes", strings.Join(currentUser.Scopes, " "))
 				}
+			} else if clientID != "" {
+				req.Header.Set("X-Client-ID", clientID)
 			}
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, proxyErr error) {

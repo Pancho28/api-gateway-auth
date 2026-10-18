@@ -117,3 +117,171 @@ Según lo estipulado en `agent.md`, toda implementación correspondiente a la Fa
     *   [ADR-002: Estrategia de Caché de Sesiones, Proxy Caching y Rate Limiting usando Redis](docs/adr/0002-estrategia-cache-sesiones-rate-limiting-redis.md).
 *   *Próximos ADRs a crear:* 
     *   `ADR-003: Trazabilidad Distribuida con OpenTelemetry y Circuit Breaking.`
+
+---
+
+## 7. Guía Canónica de Integración con Nuevos Microservicios y Proyectos
+
+Esta sección describe el protocolo estándar para desacoplar y conectar cualquier nuevo proyecto (Frontend SPA/PWA/Mobile y Backend aguas abajo en cualquier lenguaje/framework) utilizando este Gateway como proveedor centralizado de identidad y proxy perimetral.
+
+```
+┌─────────────────────────────────┐
+│   Aplicación Cliente (Frontend) │  :3000 (o app móvil)
+└────────────────┬────────────────┘
+                 │ 1. Auth:   POST http://localhost:8000/auth/login [X-Client-Id]
+                 │ 2. Proxy:  GET/POST http://localhost:8000/<prefijo>/... [Bearer + X-Client-Id]
+                 ▼
+┌─────────────────────────────────┐
+│       API Gateway (Go)          │  :8000
+│  • Valida X-Client-Id           │
+│  • Emite y valida tokens JWT    │
+│  • Purgado anti-spoofing        │
+│  • Inyección segura de headers  │
+└────────────────┬────────────────┘
+                 │ Forwarding (Streaming Zero-Copy + Cabeceras Contextuales)
+                 ▼
+┌─────────────────────────────────┐
+│     Microservicio Downstream    │  :<puerto_servicio> (NestJS, FastAPI, Go, etc.)
+│  • Valida X-Internal-Api-Key    │
+│  • Lee X-User-ID y X-User-Role  │
+│  • Ejecuta lógica de dominio    │
+└─────────────────────────────────┘
+```
+
+---
+
+### Paso 1: Levantar la Infraestructura Base del Gateway
+El Gateway requiere PostgreSQL 16 (persistencia de usuarios y credenciales) y Redis 7 (gestión de sesiones y rate limiting):
+
+```bash
+# En el directorio raíz de api-gateway-auth:
+docker-compose up -d
+```
+Verifica que los contenedores estén activos:
+* PostgreSQL: `localhost:5432`
+* Redis: `localhost:6379`
+
+Para arrancar el Gateway en entorno de desarrollo local:
+```bash
+go run ./cmd/gateway
+```
+*El servicio escuchará por defecto en `http://localhost:8000`.*
+
+---
+
+### Paso 2: Registrar el Nuevo Microservicio en el Gateway (`.env`)
+En el archivo `.env` del Gateway, agrega la configuración del microservicio dentro de la variable JSON `MICROSERVICES` y configura el origen permitido en `ORIGIN` para CORS:
+
+```env
+ORIGIN=http://localhost:3000
+
+MICROSERVICES='{
+  "<prefijo_servicio>": {
+    "url": "http://localhost:<puerto_servicio>",
+    "api_key": "<clave_secreta_compartida_interna>",
+    "allowed_clients": ["<client-id-web>", "<client-id-mobile>"],
+    "required_roles": ["USER", "CUSTOMER", "ADMIN"],
+    "public_paths": ["/api/v1/publico", "/api/v1/catalogo"],
+    "allow_anonymous": false
+  }
+}'
+```
+
+#### Diccionario de Propiedades de Configuración:
+| Clave | Tipo | Obligatorio | Descripción |
+| :--- | :---: | :---: | :--- |
+| `url` | `string` | **Sí** | URL base del microservicio interno de destino. |
+| `api_key` | `string` | No | Secreto inyectado en `X-Internal-Api-Key` para autenticación de servicio a servicio. |
+| `allowed_clients`| `[]string`| **Sí (Zero-Trust)** | Identificadores de clientes autorizados (`client_id`). Para admitir cualquier cliente use `["*"]`. |
+| `required_roles` | `[]string`| No | Roles RBAC mínimos exigidos para acceder al microservicio. Si se omite, cualquier rol autenticado tiene acceso. |
+| `public_paths` | `[]string`| No | Prefijos de sub-rutas accesibles de forma anónima (sin token JWT). |
+| `allow_anonymous`| `bool` | No | Si es `true`, todas las rutas del microservicio admiten tráfico anónimo. |
+
+> [!NOTE]
+> **Networking en Contenedores:** Si ejecutas el Gateway dentro de un contenedor Docker y el microservicio downstream corre en el host (máquina física), utiliza `http://host.docker.internal:<puerto>` en lugar de `http://localhost:<puerto>`.
+
+---
+
+### Paso 3: Consumo desde el Frontend / Aplicación Cliente
+Toda aplicación consumidora debe interactuar exclusivamente con la URL base del Gateway (`http://localhost:8000`).
+
+#### A. Autenticación y Registro
+* **Registro de Usuario:** `POST /auth/register`
+* **Inicio de Sesión:** `POST /auth/login`
+* **Cabecera Obligatoria:** `X-Client-Id: <client-id-registrado>`
+
+```http
+POST /auth/login HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+X-Client-Id: mi-app-web
+
+{
+  "email": "usuario@ejemplo.com",
+  "password": "Password123"
+}
+```
+**Respuesta exitosa (`200 OK` / `201 Created`):**
+```json
+{
+  "user": "usuario@ejemplo.com",
+  "role": "CUSTOMER",
+  "client_id": "mi-app-web",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+#### B. Consumo de Rutas Aguas Abajo (Reverse Proxy)
+Todas las llamadas hacia el microservicio deben anteponer el `<prefijo_servicio>` configurado:
+
+* **Endpoint Público (Declarado en `public_paths`):**
+  ```http
+  GET /<prefijo_servicio>/api/v1/catalogo HTTP/1.1
+  Host: localhost:8000
+  X-Client-Id: mi-app-web
+  ```
+* **Endpoint Protegido:**
+  ```http
+  GET /<prefijo_servicio>/api/v1/perfil HTTP/1.1
+  Host: localhost:8000
+  Authorization: Bearer <TOKEN_JWT>
+  X-Client-Id: mi-app-web
+  ```
+
+---
+
+### Paso 4: Implementación en el Microservicio Aguas Abajo (Downstream)
+El microservicio interno **no almacena contraseñas, no emite tokens ni valida firmas JWT criptográficas**. Opera bajo una arquitectura perimetral *Zero-Trust*, confiando en las cabeceras contextuales inyectadas por el Gateway tras el saneamiento anti-spoofing:
+
+#### Cabeceras Inyectadas hacia el Microservicio:
+| Cabecera Recibida | Origen | Utilidad en el Microservicio |
+| :--- | :--- | :--- |
+| `X-Internal-Api-Key` | Configuración Gateway | Valida que la llamada proviene legítimamente del Gateway perimetral. |
+| `X-User-ID` | BD / Sesión Gateway | UUID inmutable del usuario autenticado para asociar registros y propiedad. |
+| `X-User-Email` | Token / Sesión | Correo verificado del usuario. |
+| `X-User-Role` | Token / Sesión | Rol RBAC del usuario (`CUSTOMER`, `STAFF`, `ADMIN`, `SUPERADMIN`, etc.). |
+| `X-Client-ID` | Token / Petición | Aplicación cliente emisora de la acción (`mi-app-web`, `mi-app-mobile`). |
+
+#### Patrón de Guard / Middleware en el Backend Interno (Ejemplo Estándar):
+```typescript
+// Middleware o Guard genérico en el microservicio downstream
+export function verifyGatewayPerimeter(req, res, next) {
+  // 1. Validar que la petición provenga del Gateway
+  const apiKey = req.headers['x-internal-api-key'];
+  if (apiKey !== process.env.GATEWAY_INTERNAL_API_KEY) {
+    return res.status(401).json({ error: 'Acceso no autorizado: petición fuera de perímetro' });
+  }
+
+  // 2. Extraer identidad autenticada
+  req.currentUser = {
+    id: req.headers['x-user-id'] || null,
+    email: req.headers['x-user-email'] || null,
+    role: req.headers['x-user-role'] || null,
+    clientId: req.headers['x-client-id'] || null,
+  };
+
+  next();
+}
+```
+Con este desacoplamiento, la lógica de negocio de cualquier nuevo proyecto se mantiene limpia, modular y protegida sin duplicar implementaciones de autenticación.
+

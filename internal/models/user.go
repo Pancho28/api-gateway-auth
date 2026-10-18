@@ -60,6 +60,67 @@ type TokenResponse struct {
 	ClientID string `json:"client_id,omitempty"`
 }
 
+// Roles válidos reconocidos en el ecosistema
+var ValidRoles = map[string]bool{
+	"USER":       true,
+	"ADMIN":      true,
+	"CUSTOMER":   true,
+	"STAFF":      true,
+	"SUPERADMIN": true,
+}
+
+// IsValidRole valida si una cadena corresponde a un rol admitido
+func IsValidRole(role string) bool {
+	return ValidRoles[strings.ToUpper(strings.TrimSpace(role))]
+}
+
+// UserRegisterRequest representa el cuerpo de la petición pública para /auth/register
+type UserRegisterRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	ClientID string `json:"client_id,omitempty"`
+	Role     string `json:"role,omitempty"`
+}
+
+func (r *UserRegisterRequest) Validate() error {
+	r.Email = strings.TrimSpace(r.Email)
+	if r.Email == "" || len(r.Email) > 50 {
+		return errors.New("el correo electrónico es obligatorio y no debe exceder 50 caracteres")
+	}
+	if !emailRegex.MatchString(r.Email) {
+		return errors.New("formato de correo electrónico inválido")
+	}
+
+	if len(r.Password) < 8 || len(r.Password) > 40 {
+		return errors.New("la contraseña debe tener entre 8 y 40 caracteres")
+	}
+	if !hasLetterRegex.MatchString(r.Password) || !hasDigitRegex.MatchString(r.Password) {
+		return errors.New("la contraseña debe contener al menos una letra y un número")
+	}
+
+	r.ClientID = strings.TrimSpace(r.ClientID)
+	if r.ClientID != "" {
+		if len(r.ClientID) > 50 || !clientRegex.MatchString(r.ClientID) {
+			return errors.New("el identificador de cliente es inválido")
+		}
+	}
+
+	// Asignar rol por defecto para registro público si no viene especificado
+	if strings.TrimSpace(r.Role) == "" {
+		r.Role = "CUSTOMER"
+	} else {
+		r.Role = strings.ToUpper(strings.TrimSpace(r.Role))
+		// Impedir auto-asignación de roles privilegiados en registro perimetral abierto
+		if r.Role == "ADMIN" || r.Role == "SUPERADMIN" || r.Role == "STAFF" {
+			return errors.New("no está permitido registrarse con roles administrativos o de staff")
+		}
+		if !IsValidRole(r.Role) {
+			return errors.New("el rol especificado no es válido")
+		}
+	}
+	return nil
+}
+
 // AdminUserCreateRequest representa la petición de creación de usuario por un ADMIN
 type AdminUserCreateRequest struct {
 	Email    string `json:"email"`
@@ -84,8 +145,8 @@ func (r *AdminUserCreateRequest) Validate() error {
 	}
 
 	r.Role = strings.ToUpper(strings.TrimSpace(r.Role))
-	if r.Role != "ADMIN" && r.Role != "USER" {
-		return errors.New("el rol debe ser ADMIN o USER")
+	if !IsValidRole(r.Role) {
+		return errors.New("el rol especificado no es válido")
 	}
 	return nil
 }

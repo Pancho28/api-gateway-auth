@@ -61,19 +61,20 @@ func SetupRouter(
 	r.Group(func(public chi.Router) {
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(5))).Get("/health", gatewayHandler.HealthCheck)
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/login", authHandler.Login)
+		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/register", authHandler.Register)
 	})
 
-	// 3. Rutas de Gestión de Usuarios (Requieren Rol ADMIN)
+	// 3. Rutas de Gestión de Usuarios (Requieren Rol ADMIN o SUPERADMIN)
 	r.Group(func(admin chi.Router) {
 		admin.Use(authMiddleware.Authenticate)
 		admin.Use(middleware.RequireAdmin)
 		admin.With(rateLimiter.Limit(redis_rate.PerMinute(5))).Post("/users", userHandler.CreateUser)
 	})
 
-	// 4. Ruta Catch-All de Reverse Proxying (Requiere Autenticación)
+	// 4. Ruta Catch-All de Reverse Proxying (Autenticación Opcional según configuración del microservicio)
 	// Se registra al final para capturar todo el tráfico hacia los microservicios
 	r.Group(func(proxied chi.Router) {
-		proxied.Use(authMiddleware.Authenticate)
+		proxied.Use(authMiddleware.AuthenticateOptional)
 		proxied.Use(rateLimiter.Limit(redis_rate.PerMinute(20)))
 
 		proxied.HandleFunc("/*", gatewayHandler.ReverseProxy)

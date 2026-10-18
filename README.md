@@ -135,14 +135,35 @@ La variable de entorno `MICROSERVICES` contiene un JSON donde cada clave represe
 | `url` | `string` | Sí | URL base del microservicio interno. |
 | `api_key` | `string` | No | Clave interna compartida inyectada en `X-Internal-Api-Key`. |
 | `allowed_clients` | `[]string` | **Sí (Zero-Trust)** | Lista de `client_id` autorizados (o `["*"]`). |
-| `required_roles` | `[]string` | No | Lista opcional de roles permitidos (`USER`, `ADMIN`). |
+| `required_roles` | `[]string` | No | Lista opcional de roles permitidos (`USER`, `ADMIN`, `CUSTOMER`, `STAFF`, `SUPERADMIN`). |
+| `public_paths` | `[]string` | No | Lista de prefijos de rutas con acceso público/anónimo (ej. `["/marketplace", "/cities"]` o `["*"]`). |
+| `allow_anonymous`| `bool` | No | Si es `true`, todo el microservicio admite peticiones anónimas sin token. |
 
 ---
 
-### 3. Autenticación de Clientes en `/auth/login`
+### 3. Registro e Inicio de Sesión de Clientes
+
+#### A. Registro Público de Usuarios (`POST /auth/register`)
+Permite a los comensales o usuarios finales darse de alta en la plataforma. Por seguridad perimetral, asigna rol `CUSTOMER` (o `USER`) e impide auto-asignarse roles privilegiados (`ADMIN`, `STAFF`, `SUPERADMIN`):
+
+```http
+POST /auth/register HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+X-Client-Id: reservas-web
+
+{
+  "email": "comensal@ejemplo.com",
+  "password": "Password123",
+  "role": "CUSTOMER"
+}
+```
+*Respuesta `201 Created` idéntica a `/auth/login` con token JWT emitido inmediatamente.*
+
+#### B. Inicio de Sesión (`POST /auth/login`)
 El inicio de sesión exige obligatoriamente identificar la aplicación cliente que solicita credenciales:
 
-#### Opción A: Vía Cabecera HTTP (Recomendada)
+##### Opción A: Vía Cabecera HTTP (Recomendada)
 ```http
 POST /auth/login HTTP/1.1
 Host: localhost:8000
@@ -155,7 +176,7 @@ X-Client-Id: comensales-app
 }
 ```
 
-#### Opción B: Vía Campo en el Cuerpo JSON
+##### Opción B: Vía Campo en el Cuerpo JSON
 ```http
 POST /auth/login HTTP/1.1
 Host: localhost:8000
@@ -174,17 +195,18 @@ Content-Type: application/json
 ```json
 {
   "user": "usuario@comensales.com",
-  "role": "USER",
+  "role": "CUSTOMER",
   "client_id": "comensales-app",
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
 ```
 El token generado contiene en sus claims estándar:
 * `sub`: correo electrónico del usuario.
-* `role`: rol RBAC (`USER` o `ADMIN`).
+* `role`: rol RBAC (`USER`, `ADMIN`, `CUSTOMER`, `STAFF`, `SUPERADMIN`).
 * `client_id`: identificador de la app cliente.
 * `aud`: audiencia asociada al cliente (`jwt.ClaimStrings{"comensales-app"}`).
 * `exp`: timestamp de expiración UTC.
+
 
 ---
 
