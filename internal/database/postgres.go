@@ -16,6 +16,7 @@ import (
 type UserRepository interface {
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
 	CreateUser(ctx context.Context, user *models.User) error
+	DeleteUser(ctx context.Context, id string) error
 }
 
 // DB envuelve el pool de conexiones de pgxpool e implementa UserRepository
@@ -45,11 +46,21 @@ func NewPostgresPool(ctx context.Context, cfg *config.Config) (*DB, error) {
 		return nil, fmt.Errorf("error al inicializar pool de conexiones pgx: %w", err)
 	}
 
-	// Verificar conectividad mediante Ping
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		log.Printf("Advertencia: No se pudo conectar inmediatamente a PostgreSQL: %v (degradación permitida en arranque/tests)", err)
+	// Verificar conectividad mediante Ping con reintentos para arranque en Docker
+	var pingErr error
+	for attempt := 1; attempt <= 5; attempt++ {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		pingErr = pool.Ping(pingCtx)
+		cancel()
+		if pingErr == nil {
+			break
+		}
+		if attempt < 5 {
+			time.Sleep(1 * time.Second)
+		}
+	}
+	if pingErr != nil {
+		log.Printf("Advertencia: No se pudo conectar inmediatamente a PostgreSQL: %v (degradación permitida en arranque/tests)", pingErr)
 	}
 
 	return &DB{Pool: pool}, nil
@@ -93,6 +104,16 @@ func (db *DB) CreateUser(ctx context.Context, user *models.User) error {
 	_, err := db.Pool.Exec(ctx, query, user.ID, user.Email, user.HashedPassword, user.Role)
 	if err != nil {
 		return fmt.Errorf("error al insertar usuario en la base de datos: %w", err)
+	}
+	return nil
+}
+
+// DeleteUser elimina atómicamente un registro de usuario en PostgreSQL por su ID
+func (db *DB) DeleteUser(ctx context.Context, id string) error {
+	query := `DELETE FROM users WHERE id = $1`
+	_, err := db.Pool.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("error al eliminar usuario en la base de datos: %w", err)
 	}
 	return nil
 }

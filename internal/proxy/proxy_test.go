@@ -174,9 +174,10 @@ func TestProxyServiceForwardAndHeaderHandling(t *testing.T) {
 	assert.Equal(t, "secret-internal-key-123", receivedHeaders.Get("X-Internal-Api-Key"), "Debe inyectar la API Key interna legítima")
 	assert.Equal(t, "user-uuid-1", receivedHeaders.Get("X-User-ID"), "Debe propagar el ID del usuario")
 	assert.Equal(t, "client@test.com", receivedHeaders.Get("X-User-Email"), "Debe propagar el email del usuario")
-	assert.Equal(t, "USER", receivedHeaders.Get("X-User-Role"), "Debe propagar el rol legítimo sin spoofing")
+	assert.Equal(t, "user", receivedHeaders.Get("X-User-Role"), "Debe propagar el rol legítimo sin spoofing")
 	assert.Equal(t, "client-app", receivedHeaders.Get("X-Client-ID"), "Debe propagar el Client ID legítimo sin spoofing")
 	assert.Equal(t, "orders:create orders:read", receivedHeaders.Get("X-Scopes"), "Debe propagar los scopes legítimos sin spoofing")
+	assert.NotEmpty(t, receivedHeaders.Get("X-Request-Id"), "Debe propagar X-Request-Id para distributed tracing")
 }
 
 func TestProxyServiceCacheHitAndMiss(t *testing.T) {
@@ -198,7 +199,7 @@ func TestProxyServiceCacheHitAndMiss(t *testing.T) {
 
 	// Simulamos respuesta cacheada directamente en Redis si Redis está disponible
 	ctx := context.Background()
-	cacheKey := svc.generateCacheKey("orders", "items", "client-app", nil)
+	cacheKey := svc.generateCacheKey("orders", "items", "client-app", "client@test.com", nil)
 	svc.redis.SetJSON(ctx, cacheKey, CachedResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},

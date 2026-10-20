@@ -46,24 +46,52 @@ func TestAdminUserCreateValidation(t *testing.T) {
 	reqInvalidRole.Role = "INVALID_ROLE"
 	assert.Error(t, reqInvalidRole.Validate())
 
-	// 7.b Roles válidos admitidos en el ecosistema (CUSTOMER, STAFF, SUPERADMIN)
-	reqSuperRole := req
-	reqSuperRole.Role = "SUPERADMIN"
-	assert.NoError(t, reqSuperRole.Validate())
-	reqStaffRole := req
-	reqStaffRole.Role = "staff"
-	assert.NoError(t, reqStaffRole.Validate())
-	assert.Equal(t, "STAFF", reqStaffRole.Role)
-	reqCustomerRole := req
-	reqCustomerRole.Role = "customer"
-	assert.NoError(t, reqCustomerRole.Validate())
-	assert.Equal(t, "CUSTOMER", reqCustomerRole.Role)
+	// 7.b Prohibición estricta de crear usuarios con rol admin por API
+	reqAdminRole := req
+	reqAdminRole.Role = "admin"
+	assert.Error(t, reqAdminRole.Validate())
 
-	// 8. Normalización de rol en minúsculas a mayúsculas
-	reqLowerRole := req
-	reqLowerRole.Role = "admin"
-	assert.NoError(t, reqLowerRole.Validate())
-	assert.Equal(t, "ADMIN", reqLowerRole.Role)
+	// 8. Validación de rol "user" en minúsculas y mayúsculas
+	reqUpperUser := req
+	reqUpperUser.Role = "USER"
+	assert.NoError(t, reqUpperUser.Validate())
+	assert.Equal(t, "user", reqUpperUser.Role)
+
+	// 9. Validación de ID (Client-Generated UUID)
+	reqValidUUID := req
+	reqValidUUID.ID = "550e8400-e29b-41d4-a716-446655440000"
+	assert.NoError(t, reqValidUUID.Validate())
+
+	reqInvalidUUID := req
+	reqInvalidUUID.ID = "not-a-valid-uuid"
+	assert.Error(t, reqInvalidUUID.Validate())
+}
+
+func TestM2MUserCreateValidation(t *testing.T) {
+	// Caso válido con UUID generado por el cliente
+	req := M2MUserCreateRequest{
+		ID:       "550e8400-e29b-41d4-a716-446655440000",
+		Email:    "backend-user@test.com",
+		Password: "Password123",
+		ClientID: "pos-backend",
+		Role:     "user",
+	}
+	assert.NoError(t, req.Validate())
+
+	// Sin ID también es válido (el gateway lo genera)
+	reqNoID := req
+	reqNoID.ID = ""
+	assert.NoError(t, reqNoID.Validate())
+
+	// Prohibición estricta de crear rol admin
+	reqAdmin := req
+	reqAdmin.Role = "admin"
+	assert.Error(t, reqAdmin.Validate())
+
+	// Sin ClientID debe fallar
+	reqNoClient := req
+	reqNoClient.ClientID = ""
+	assert.Error(t, reqNoClient.Validate())
 }
 
 func TestUserLoginValidation(t *testing.T) {

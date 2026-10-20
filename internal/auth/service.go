@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"api-gateway/internal/config"
@@ -84,11 +85,21 @@ func (s *Service) Register(ctx context.Context, req *models.UserRegisterRequest)
 		return nil, fmt.Errorf("error al hashear contraseña: %w", err)
 	}
 
+	userID := strings.TrimSpace(req.ID)
+	if userID == "" {
+		userID = uuid.New().String()
+	}
+
+	role := strings.ToLower(strings.TrimSpace(req.Role))
+	if role == "" {
+		role = models.RoleUser
+	}
+
 	newUser := &models.User{
-		ID:             uuid.New().String(),
+		ID:             userID,
 		Email:          req.Email,
 		HashedPassword: hashedPassword,
-		Role:           req.Role,
+		Role:           role,
 	}
 
 	if err := s.db.CreateUser(ctx, newUser); err != nil {

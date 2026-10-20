@@ -49,6 +49,18 @@ func (m *MockUserRepository) CreateUser(ctx context.Context, user *models.User) 
 	return nil
 }
 
+func (m *MockUserRepository) DeleteUser(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for email, u := range m.users {
+		if u.ID == id {
+			delete(m.users, email)
+			return nil
+		}
+	}
+	return nil
+}
+
 var (
 	lastProxyHeaders  http.Header
 	proxyHeadersMutex sync.Mutex
@@ -91,6 +103,7 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 
 	cfg := &config.Config{
 		SecretKey:                "test-very-secure-secret-key-123456",
+		GatewaySecret:            "test-gateway-secret",
 		AccessTokenExpireMinutes: 30,
 		RedisCacheTTL:            60 * time.Second,
 		Microservices: map[string]config.ServiceConfig{
@@ -122,7 +135,7 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 		ID:             uuid.New().String(),
 		Email:          "admin@test.com",
 		HashedPassword: adminHash,
-		Role:           "ADMIN",
+		Role:           "admin",
 	}
 
 	// Seed de usuario regular
@@ -132,13 +145,15 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 		ID:             uuid.New().String(),
 		Email:          "user@test.com",
 		HashedPassword: userHash,
-		Role:           "USER",
+		Role:           "user",
 	}
 
 	rdb := redis.NewClient(&config.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
+		RedisDB:   15,
 	})
+	_ = rdb.GetClient().FlushDB(context.Background()).Err()
 
 	router := api.SetupRouter(cfg, mockDB, rdb)
 	return router, mockDB, cfg, backend
@@ -191,7 +206,7 @@ func TestAuthLoginEndpoint(t *testing.T) {
 	err := json.Unmarshal(recHeader.Body.Bytes(), &tokenResp)
 	require.NoError(t, err)
 	assert.Equal(t, "admin@test.com", tokenResp.User)
-	assert.Equal(t, "ADMIN", tokenResp.Role)
+	assert.Equal(t, "admin", tokenResp.Role)
 	assert.Equal(t, "admin-client", tokenResp.ClientID)
 	assert.NotEmpty(t, tokenResp.Token)
 
@@ -248,7 +263,7 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	newUserBody, _ := json.Marshal(models.AdminUserCreateRequest{
 		Email:    "created@test.com",
 		Password: "NewPassword1",
-		Role:     "USER",
+		Role:     "user",
 	})
 
 	// 1. Petición sin autenticar -> 401
@@ -257,8 +272,8 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	router.ServeHTTP(recUnauth, reqUnauth)
 	assert.Equal(t, http.StatusUnauthorized, recUnauth.Code)
 
-	// 2. Petición autenticada como usuario regular (USER) -> 403 Forbidden
-	userToken, err := security.GenerateToken("user@test.com", "USER", "test-client", cfg.SecretKey, 15*time.Minute)
+	// 2. Petición autenticada como usuario regular (user) -> 403 Forbidden
+	userToken, err := security.GenerateToken("user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqForbidden := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(newUserBody))
@@ -268,8 +283,8 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, recForbidden.Code)
 	assert.Contains(t, recForbidden.Body.String(), "Permisos insuficientes para el recurso [E-09]")
 
-	// 3. Petición autenticada como ADMIN -> 201 Created
-	adminToken, err := security.GenerateToken("admin@test.com", "ADMIN", "admin-client", cfg.SecretKey, 15*time.Minute)
+	// 3. Petición autenticada como admin -> 201 Created
+	adminToken, err := security.GenerateToken("admin@test.com", "admin", "admin-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqAdmin := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(newUserBody))
@@ -282,10 +297,22 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	err = json.Unmarshal(recAdmin.Body.Bytes(), &userResp)
 	require.NoError(t, err)
 	assert.Equal(t, "created@test.com", userResp.Email)
-	assert.Equal(t, "USER", userResp.Role)
+	assert.Equal(t, "user", userResp.Role)
 	assert.NotEmpty(t, userResp.ID)
 
-	// 4. Intento de duplicar email -> 409 Conflict [E-12]
+	// 4. Prohibición estricta de crear admin por API -> 400 Bad Request
+	badAdminBody, _ := json.Marshal(models.AdminUserCreateRequest{
+		Email:    "newadmin@test.com",
+		Password: "NewPassword1",
+		Role:     "admin",
+	})
+	reqBadAdmin := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(badAdminBody))
+	reqBadAdmin.Header.Set("Authorization", "Bearer "+adminToken)
+	recBadAdmin := httptest.NewRecorder()
+	router.ServeHTTP(recBadAdmin, reqBadAdmin)
+	assert.Equal(t, http.StatusBadRequest, recBadAdmin.Code)
+
+	// 5. Intento de duplicar email -> 409 Conflict [E-12]
 	reqDup := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(newUserBody))
 	reqDup.Header.Set("Authorization", "Bearer "+adminToken)
 	recDup := httptest.NewRecorder()
@@ -305,7 +332,7 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recUnauth.Code)
 
 	// 2. Petición con token válido y cliente autorizado -> 200 OK y reenvío exitoso
-	userToken, err := security.GenerateToken("user@test.com", "USER", "test-client", cfg.SecretKey, 15*time.Minute)
+	userToken, err := security.GenerateToken("user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqAuth := httptest.NewRequest(http.MethodGet, "/shop/items", nil)
@@ -322,10 +349,13 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	// Verificar inyección fidedigna y anti-spoofing en el backend
 	headers := getLastProxyHeaders()
 	require.NotNil(t, headers)
-	assert.Equal(t, "test-client", headers.Get("X-Client-ID"), "Debe inyectar el client ID verificado del token")
+	assert.Equal(t, "test-client", headers.Get("X-Client-Id"), "Debe inyectar el client ID verificado del token")
 	assert.Equal(t, "user@test.com", headers.Get("X-User-Email"))
-	assert.Equal(t, "USER", headers.Get("X-User-Role"))
+	assert.Equal(t, "user", headers.Get("X-User-Role"))
 	assert.Equal(t, "backend-secret-api-key", headers.Get("X-Internal-Api-Key"))
+	assert.NotEmpty(t, headers.Get("X-User-Id"))
+	assert.NotEmpty(t, headers.Get("X-Request-Id"))
+	assert.Equal(t, headers.Get("X-Request-Id"), recAuth.Header().Get("X-Request-Id"))
 
 	// 3. Petición POST con streaming de cuerpo hacia microservicio
 	orderBody := []byte(`{"product_id":"prod-1","qty":2}`)
@@ -420,11 +450,25 @@ func TestAuthRegisterEndpoint(t *testing.T) {
 	err := json.Unmarshal(recValid.Body.Bytes(), &tokenResp)
 	require.NoError(t, err)
 	assert.Equal(t, "comensal@test.com", tokenResp.User)
-	assert.Equal(t, "CUSTOMER", tokenResp.Role)
+	assert.Equal(t, "user", tokenResp.Role)
 	assert.Equal(t, "reservas-web", tokenResp.ClientID)
 	assert.NotEmpty(t, tokenResp.Token)
 
-	// 4. Registro duplicado con el mismo correo -> 409 Conflict [E-12]
+	// 4. Registro con Client-Generated UUID
+	customUUID := "a1b2c3d4-e5f6-47a8-b9c0-1234567890ab"
+	bodyWithCustomID, _ := json.Marshal(models.UserRegisterRequest{
+		ID:       customUUID,
+		Email:    "withcustomid@test.com",
+		Password: "Password123",
+		ClientID: "reservas-web",
+	})
+	reqCustomID := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyWithCustomID))
+	reqCustomID.Header.Set("Content-Type", "application/json")
+	recCustomID := httptest.NewRecorder()
+	router.ServeHTTP(recCustomID, reqCustomID)
+	assert.Equal(t, http.StatusCreated, recCustomID.Code)
+
+	// 5. Registro duplicado con el mismo correo -> 409 Conflict [E-12]
 	reqDuplicate := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyValid))
 	reqDuplicate.Header.Set("Content-Type", "application/json")
 	recDuplicate := httptest.NewRecorder()
@@ -433,57 +477,86 @@ func TestAuthRegisterEndpoint(t *testing.T) {
 	assert.Contains(t, recDuplicate.Body.String(), "E-12")
 }
 
-func TestFlexibleRolesAndAdmin(t *testing.T) {
-	router, _, cfg, backend := setupTestEnvironment(t)
+func TestM2MBackendEndpointsAndBinaryRoles(t *testing.T) {
+	router, mockDB, _, backend := setupTestEnvironment(t)
 	defer backend.Close()
 
-	// Token de admin válido
-	adminToken, err := security.GenerateToken("admin@test.com", "ADMIN", "admin-client", cfg.SecretKey, 15*time.Minute)
+	secret := "test-gateway-secret"
+
+	// 1. Creación M2M sin secreto -> 401 Unauthorized [E-08]
+	m2mReq := models.M2MUserCreateRequest{
+		Email:    "m2muser@app.com",
+		Password: "M2MPassword123",
+		ClientID: "pos-backend",
+		Role:     "user",
+	}
+	body, _ := json.Marshal(m2mReq)
+	reqNoSecret := httptest.NewRequest(http.MethodPost, "/auth/admin/users", bytes.NewReader(body))
+	reqNoSecret.Header.Set("Content-Type", "application/json")
+	recNoSecret := httptest.NewRecorder()
+	router.ServeHTTP(recNoSecret, reqNoSecret)
+	assert.Equal(t, http.StatusUnauthorized, recNoSecret.Code)
+	assert.Contains(t, recNoSecret.Body.String(), "E-08")
+
+	// 2. Creación M2M con Client-Generated UUID y secreto válido -> 201 Created
+	customID := "770e8400-e29b-41d4-a716-446655440000"
+	m2mReq.ID = customID
+	bodyWithID, _ := json.Marshal(m2mReq)
+	reqWithSecret := httptest.NewRequest(http.MethodPost, "/auth/admin/users", bytes.NewReader(bodyWithID))
+	reqWithSecret.Header.Set("Content-Type", "application/json")
+	reqWithSecret.Header.Set("X-Gateway-Secret", secret)
+	recWithSecret := httptest.NewRecorder()
+	router.ServeHTTP(recWithSecret, reqWithSecret)
+
+	assert.Equal(t, http.StatusCreated, recWithSecret.Code)
+	var createdResp models.M2MUserResponse
+	err := json.Unmarshal(recWithSecret.Body.Bytes(), &createdResp)
 	require.NoError(t, err)
+	assert.Equal(t, customID, createdResp.ID, "Debe persistir el UUID exacto enviado por el cliente")
+	assert.Equal(t, "m2muser@app.com", createdResp.Email)
+	assert.Equal(t, "user", createdResp.Role)
+	assert.Equal(t, "pos-backend", createdResp.ClientID)
 
-	// 1. Admin crea usuario con rol STAFF
-	staffReq, _ := json.Marshal(models.AdminUserCreateRequest{
-		Email:    "staff1@restaurant.com",
-		Password: "StaffPassword1",
-		Role:     "STAFF",
-	})
-	reqStaff := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(staffReq))
-	reqStaff.Header.Set("Content-Type", "application/json")
-	reqStaff.Header.Set("Authorization", "Bearer "+adminToken)
-	recStaff := httptest.NewRecorder()
-	router.ServeHTTP(recStaff, reqStaff)
-	assert.Equal(t, http.StatusCreated, recStaff.Code)
-	assert.Contains(t, recStaff.Body.String(), "STAFF")
-
-	// 2. Admin crea usuario con rol SUPERADMIN
-	superAdminReq, _ := json.Marshal(models.AdminUserCreateRequest{
-		Email:    "superadmin@platform.com",
-		Password: "SuperPassword1",
-		Role:     "SUPERADMIN",
-	})
-	reqSuperAdmin := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(superAdminReq))
-	reqSuperAdmin.Header.Set("Content-Type", "application/json")
-	reqSuperAdmin.Header.Set("Authorization", "Bearer "+adminToken)
-	recSuperAdmin := httptest.NewRecorder()
-	router.ServeHTTP(recSuperAdmin, reqSuperAdmin)
-	assert.Equal(t, http.StatusCreated, recSuperAdmin.Code)
-	assert.Contains(t, recSuperAdmin.Body.String(), "SUPERADMIN")
-
-	// 3. Usuario con rol SUPERADMIN puede acceder a endpoints administrativos
-	superAdminToken, err := security.GenerateToken("superadmin@platform.com", "SUPERADMIN", "admin-client", cfg.SecretKey, 15*time.Minute)
+	// Verificar que está en la BD mock
+	persisted, err := mockDB.GetUserByEmail(context.Background(), "m2muser@app.com")
 	require.NoError(t, err)
+	require.NotNil(t, persisted)
+	assert.Equal(t, customID, persisted.ID)
 
-	userBySuperReq, _ := json.Marshal(models.AdminUserCreateRequest{
-		Email:    "customer1@test.com",
-		Password: "CustomerPass1",
-		Role:     "CUSTOMER",
-	})
-	reqUserBySuper := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(userBySuperReq))
-	reqUserBySuper.Header.Set("Content-Type", "application/json")
-	reqUserBySuper.Header.Set("Authorization", "Bearer "+superAdminToken)
-	recUserBySuper := httptest.NewRecorder()
-	router.ServeHTTP(recUserBySuper, reqUserBySuper)
-	assert.Equal(t, http.StatusCreated, recUserBySuper.Code)
+	// 3. Prohibición estricta: intento de crear usuario con rol "admin" vía endpoint M2M -> 400 Bad Request
+	adminAttemptReq := models.M2MUserCreateRequest{
+		Email:    "malicious_admin@app.com",
+		Password: "Password123",
+		ClientID: "pos-backend",
+		Role:     "admin",
+	}
+	adminAttemptBody, _ := json.Marshal(adminAttemptReq)
+	reqAdminAttempt := httptest.NewRequest(http.MethodPost, "/auth/admin/users", bytes.NewReader(adminAttemptBody))
+	reqAdminAttempt.Header.Set("Content-Type", "application/json")
+	reqAdminAttempt.Header.Set("X-Gateway-Secret", secret)
+	recAdminAttempt := httptest.NewRecorder()
+	router.ServeHTTP(recAdminAttempt, reqAdminAttempt)
+	assert.Equal(t, http.StatusBadRequest, recAdminAttempt.Code)
+
+	// 4. Compensación / Rollback: DELETE /auth/admin/users/:id con secreto válido -> 200 OK
+	reqDelete := httptest.NewRequest(http.MethodDelete, "/auth/admin/users/"+customID, nil)
+	reqDelete.Header.Set("X-Gateway-Secret", secret)
+	recDelete := httptest.NewRecorder()
+	router.ServeHTTP(recDelete, reqDelete)
+
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+	assert.Contains(t, recDelete.Body.String(), "Credencial eliminada exitosamente")
+
+	// Verificar que el usuario fue eliminado de la BD
+	deletedUser, err := mockDB.GetUserByEmail(context.Background(), "m2muser@app.com")
+	require.NoError(t, err)
+	assert.Nil(t, deletedUser, "El usuario debe haber sido eliminado en la operación de compensación")
+
+	// 5. DELETE sin secreto -> 401 Unauthorized
+	reqDeleteNoSecret := httptest.NewRequest(http.MethodDelete, "/auth/admin/users/"+customID, nil)
+	recDeleteNoSecret := httptest.NewRecorder()
+	router.ServeHTTP(recDeleteNoSecret, reqDeleteNoSecret)
+	assert.Equal(t, http.StatusUnauthorized, recDeleteNoSecret.Code)
 }
 
 func TestPublicPathsProxying(t *testing.T) {
@@ -494,7 +567,7 @@ func TestPublicPathsProxying(t *testing.T) {
 	mockDB.users["comensal@test.com"] = &models.User{
 		ID:    "guest-uuid-123",
 		Email: "comensal@test.com",
-		Role:  "CUSTOMER",
+		Role:  "user",
 	}
 
 	// 1. Acceso anónimo a sub-ruta pública (/catalog/items) sin token -> 200 OK
@@ -521,7 +594,7 @@ func TestPublicPathsProxying(t *testing.T) {
 	assert.Contains(t, recPrivateNoToken.Body.String(), "E-08")
 
 	// 3. Acceso a sub-ruta pública pero CON token válido de comensal -> 200 OK y propaga X-User-ID
-	guestToken, err := security.GenerateToken("comensal@test.com", "CUSTOMER", "reservas-web", cfg.SecretKey, 15*time.Minute)
+	guestToken, err := security.GenerateToken("comensal@test.com", "user", "reservas-web", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqPublicWithToken := httptest.NewRequest(http.MethodGet, "/catalog/items", nil)
@@ -534,9 +607,10 @@ func TestPublicPathsProxying(t *testing.T) {
 	headersWithUser := getLastProxyHeaders()
 	require.NotNil(t, headersWithUser)
 	assert.Equal(t, "comensal@test.com", headersWithUser.Get("X-User-Email"))
-	assert.Equal(t, "CUSTOMER", headersWithUser.Get("X-User-Role"))
+	assert.Equal(t, "user", headersWithUser.Get("X-User-Role"))
 	assert.Equal(t, "reservas-web", headersWithUser.Get("X-Client-Id"))
 	assert.Equal(t, "guest-uuid-123", headersWithUser.Get("X-User-ID"))
+	assert.NotEmpty(t, headersWithUser.Get("X-Request-Id"))
 }
 
 

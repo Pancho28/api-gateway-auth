@@ -180,7 +180,7 @@ MICROSERVICES='{
     "url": "http://localhost:<puerto_servicio>",
     "api_key": "<clave_secreta_compartida_interna>",
     "allowed_clients": ["<client-id-web>", "<client-id-mobile>"],
-    "required_roles": ["USER", "CUSTOMER", "ADMIN"],
+    "required_roles": ["user", "admin"],
     "public_paths": ["/api/v1/publico", "/api/v1/catalogo"],
     "allow_anonymous": false
   }
@@ -193,7 +193,7 @@ MICROSERVICES='{
 | `url` | `string` | **Sí** | URL base del microservicio interno de destino. |
 | `api_key` | `string` | No | Secreto inyectado en `X-Internal-Api-Key` para autenticación de servicio a servicio. |
 | `allowed_clients`| `[]string`| **Sí (Zero-Trust)** | Identificadores de clientes autorizados (`client_id`). Para admitir cualquier cliente use `["*"]`. |
-| `required_roles` | `[]string`| No | Roles RBAC mínimos exigidos para acceder al microservicio. Si se omite, cualquier rol autenticado tiene acceso. |
+| `required_roles` | `[]string`| No | Roles globales del Gateway exigidos para acceder al microservicio (`"user"`, `"admin"`). Si se omite, cualquier usuario autenticado tiene acceso. |
 | `public_paths` | `[]string`| No | Prefijos de sub-rutas accesibles de forma anónima (sin token JWT). |
 | `allow_anonymous`| `bool` | No | Si es `true`, todas las rutas del microservicio admiten tráfico anónimo. |
 
@@ -205,8 +205,8 @@ MICROSERVICES='{
 ### Paso 3: Consumo desde el Frontend / Aplicación Cliente
 Toda aplicación consumidora debe interactuar exclusivamente con la URL base del Gateway (`http://localhost:8000`).
 
-#### A. Autenticación y Registro
-* **Registro de Usuario:** `POST /auth/register`
+#### A. Autenticación y Registro Público
+* **Registro de Usuario:** `POST /auth/register` (Admite campo opcional `"id"` con UUIDv4 generado por el cliente. Rol por defecto: `"user"`. Prohibido crear `"admin"`).
 * **Inicio de Sesión:** `POST /auth/login`
 * **Cabecera Obligatoria:** `X-Client-Id: <client-id-registrado>`
 
@@ -225,13 +225,28 @@ X-Client-Id: mi-app-web
 ```json
 {
   "user": "usuario@ejemplo.com",
-  "role": "CUSTOMER",
+  "role": "user",
   "client_id": "mi-app-web",
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
 ```
 
-#### B. Consumo de Rutas Aguas Abajo (Reverse Proxy)
+#### B. Endpoints M2M para Backends Aguas Abajo (Machine-to-Machine)
+Para orquestar creación de usuarios y rollbacks atómicos (patrón Saga) entre el Gateway y las BDs de negocio:
+* **Creación M2M:** `POST /auth/admin/users` (Header `X-Gateway-Secret: <GATEWAY_SECRET>`)
+  ```json
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "usuario@ejemplo.com",
+    "password": "Password123!",
+    "client_id": "mi-app-backend",
+    "role": "user",
+    "metadata": {}
+  }
+  ```
+* **Compensación / Rollback M2M:** `DELETE /auth/admin/users/:id` (Header `X-Gateway-Secret: <GATEWAY_SECRET>`)
+
+#### C. Consumo de Rutas Aguas Abajo (Reverse Proxy)
 Todas las llamadas hacia el microservicio deben anteponer el `<prefijo_servicio>` configurado:
 
 * **Endpoint Público (Declarado en `public_paths`):**
@@ -257,10 +272,11 @@ El microservicio interno **no almacena contraseñas, no emite tokens ni valida f
 | Cabecera Recibida | Origen | Utilidad en el Microservicio |
 | :--- | :--- | :--- |
 | `X-Internal-Api-Key` | Configuración Gateway | Valida que la llamada proviene legítimamente del Gateway perimetral. |
-| `X-User-ID` | BD / Sesión Gateway | UUID inmutable del usuario autenticado para asociar registros y propiedad. |
+| `X-User-Id` | BD / Sesión Gateway | UUID inmutable del usuario autenticado para asociar registros y propiedad. |
 | `X-User-Email` | Token / Sesión | Correo verificado del usuario. |
-| `X-User-Role` | Token / Sesión | Rol RBAC del usuario (`CUSTOMER`, `STAFF`, `ADMIN`, `SUPERADMIN`, etc.). |
-| `X-Client-ID` | Token / Petición | Aplicación cliente emisora de la acción (`mi-app-web`, `mi-app-mobile`). |
+| `X-User-Role` | Token / Sesión | Rol a nivel de sistema del Gateway (`"admin"` o `"user"`). El dominio de negocio maneja permisos finos internamente. |
+| `X-Client-Id` | Token / Petición | Aplicación cliente emisora de la acción (`mi-app-web`, `mi-app-mobile`). |
+| `X-Request-Id` | Gateway (Chi/Tracing) | UUID de trazabilidad correlacionada para tracing distribuido. |
 
 #### Patrón de Guard / Middleware en el Backend Interno (Ejemplo Estándar):
 ```typescript
@@ -272,12 +288,13 @@ export function verifyGatewayPerimeter(req, res, next) {
     return res.status(401).json({ error: 'Acceso no autorizado: petición fuera de perímetro' });
   }
 
-  // 2. Extraer identidad autenticada
+  // 2. Extraer identidad autenticada y trazabilidad
   req.currentUser = {
     id: req.headers['x-user-id'] || null,
     email: req.headers['x-user-email'] || null,
     role: req.headers['x-user-role'] || null,
     clientId: req.headers['x-client-id'] || null,
+    requestId: req.headers['x-request-id'] || null,
   };
 
   next();

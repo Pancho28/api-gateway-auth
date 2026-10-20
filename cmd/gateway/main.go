@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
 	log.Println("==================================================")
 	log.Println("🚀 Iniciando API Gateway & Centralized Auth (Go)")
 	log.Println("==================================================")

@@ -18,6 +18,9 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/models"
 	"api-gateway/internal/redis"
+
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 )
 
 // Máximo tamaño de respuesta a almacenar en caché de Redis (1 MB) para prevenir OOM (Solución Vulnerabilidad 1)
@@ -69,12 +72,14 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 	// 1. Sanitización de ruta contra ataques de Path Traversal
 	prefix, subPath, err := s.sanitizePath(rawPath)
 	if err != nil {
+		log.Printf("[PROXY] [BAD_PATH] Ruta inválida o sospechosa '%s' | IP: %s | Error: %v", rawPath, r.RemoteAddr, err)
 		http.Error(w, `{"detail":"Ruta de acceso inválida o no permitida [E-04]"}`, http.StatusBadRequest)
 		return
 	}
 
 	serviceConfig, ok := s.cfg.Microservices[prefix]
 	if !ok || serviceConfig.URL == "" {
+		log.Printf("[PROXY] [SERVICE_NOT_FOUND] Microservicio no configurado para prefijo '%s' (Ruta: '%s') | IP: %s", prefix, rawPath, r.RemoteAddr)
 		http.Error(w, `{"detail":"Recurso o servicio no encontrado [E-06]"}`, http.StatusNotFound)
 		return
 	}
@@ -82,6 +87,7 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 	// 2. Particionamiento y aislamiento de clientes (Zero Trust / Deny by default)
 	isPublic := serviceConfig.IsPathPublic(subPath)
 	if !isPublic && currentUser == nil {
+		log.Printf("[SECURITY] [UNAUTHORIZED] Intento de acceso a ruta privada '%s' en servicio '%s' sin sesión | IP: %s", subPath, prefix, r.RemoteAddr)
 		http.Error(w, `{"detail":"No se pudieron validar las credenciales [E-08]"}`, http.StatusUnauthorized)
 		return
 	}
@@ -96,32 +102,40 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 	}
 
 	if len(serviceConfig.AllowedClients) == 0 {
+		log.Printf("[SECURITY] [ZERO_TRUST_DENIED] Microservicio '%s' no tiene allowed_clients configurados (Deny by default) | IP: %s", prefix, r.RemoteAddr)
 		http.Error(w, `{"detail":"Acceso al recurso denegado [E-03]"}`, http.StatusForbidden)
 		return
 	}
 
 	if !serviceConfig.IsClientAllowed(clientID) {
+		log.Printf("[SECURITY] [CLIENT_DENIED] Cliente '%s' no autorizado para microservicio '%s' | IP: %s", clientID, prefix, r.RemoteAddr)
 		http.Error(w, `{"detail":"Acceso al recurso denegado [E-03]"}`, http.StatusForbidden)
 		return
 	}
 
 	if !isPublic && len(serviceConfig.RequiredRoles) > 0 && !serviceConfig.IsRoleAllowed(role) {
+		log.Printf("[SECURITY] [ROLE_DENIED] Rol '%s' denegado para microservicio '%s' (requeridos: %v) | IP: %s", role, prefix, serviceConfig.RequiredRoles, r.RemoteAddr)
 		http.Error(w, `{"detail":"Acceso al recurso denegado [E-03]"}`, http.StatusForbidden)
 		return
 	}
 
 	targetURL, err := url.Parse(serviceConfig.URL)
 	if err != nil {
+		log.Printf("[PROXY] [CONFIG_ERROR] URL de microservicio '%s' inválida ('%s'): %v", prefix, serviceConfig.URL, err)
 		http.Error(w, `{"detail":"Error interno del servidor [E-99]"}`, http.StatusInternalServerError)
 		return
 	}
 
 	isGet := r.Method == http.MethodGet
 
-	// 3. Interceptación de Caché en Redis para peticiones GET particionadas por cliente (ADR-002)
+	// 3. Interceptación de Caché en Redis para peticiones GET particionadas por cliente y usuario (ADR-002)
 	var cacheKey string
 	if isGet {
-		cacheKey = s.generateCacheKey(prefix, subPath, clientID, r.URL.Query())
+		userIdentifier := ""
+		if currentUser != nil {
+			userIdentifier = currentUser.Email
+		}
+		cacheKey = s.generateCacheKey(prefix, subPath, clientID, userIdentifier, r.URL.Query())
 		var cached CachedResponse
 		if s.redis.GetJSON(r.Context(), cacheKey, &cached) {
 			for k, v := range cached.Headers {
@@ -163,19 +177,36 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 				req.Header.Set("X-Internal-Api-Key", serviceConfig.APIKey)
 			}
 
+			// Inyectar X-Request-Id para distributed tracing
+			requestID := chimiddleware.GetReqID(r.Context())
+			if requestID == "" {
+				requestID = r.Header.Get("X-Request-Id")
+			}
+			if requestID == "" {
+				requestID = uuid.New().String()
+			}
+			req.Header.Set("X-Request-Id", requestID)
+			w.Header().Set("X-Request-Id", requestID)
+
 			// Inyectar cabeceras seguras de identidad del usuario y cliente aguas abajo
 			if currentUser != nil {
-				req.Header.Set("X-User-ID", currentUser.ID)
+				req.Header.Set("X-User-Id", currentUser.ID)
 				req.Header.Set("X-User-Email", currentUser.Email)
-				req.Header.Set("X-User-Role", currentUser.Role)
+				userRole := strings.ToLower(strings.TrimSpace(currentUser.Role))
+				if userRole != models.RoleAdmin {
+					userRole = models.RoleUser
+				}
+				req.Header.Set("X-User-Role", userRole)
 				if currentUser.ClientID != "" {
-					req.Header.Set("X-Client-ID", currentUser.ClientID)
+					req.Header.Set("X-Client-Id", currentUser.ClientID)
+				} else if clientID != "" {
+					req.Header.Set("X-Client-Id", clientID)
 				}
 				if len(currentUser.Scopes) > 0 {
 					req.Header.Set("X-Scopes", strings.Join(currentUser.Scopes, " "))
 				}
 			} else if clientID != "" {
-				req.Header.Set("X-Client-ID", clientID)
+				req.Header.Set("X-Client-Id", clientID)
 			}
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
@@ -222,6 +253,11 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 	}
 
 	// 5. Ejecutar reenvío
+	userDisplay := "anónimo"
+	if currentUser != nil {
+		userDisplay = currentUser.Email
+	}
+	log.Printf("[PROXY] [FORWARD] %s /%s -> %s | Cliente: '%s' | Usuario: '%s'", r.Method, rawPath, targetURL.String(), clientID, userDisplay)
 	proxy.ServeHTTP(w, r)
 }
 
@@ -263,7 +299,7 @@ func (s *Service) sanitizePath(path string) (prefix, subPath string, err error) 
 	return prefix, subPath, nil
 }
 
-func (s *Service) generateCacheKey(prefix, subPath, clientID string, query url.Values) string {
+func (s *Service) generateCacheKey(prefix, subPath, clientID, userIdentifier string, query url.Values) string {
 	keys := make([]string, 0, len(query))
 	for k := range query {
 		keys = append(keys, k)
@@ -285,8 +321,11 @@ func (s *Service) generateCacheKey(prefix, subPath, clientID string, query url.V
 	h.Write([]byte(rawToHash))
 	hashDigest := hex.EncodeToString(h.Sum(nil))
 
-	if clientID != "" {
-		return fmt.Sprintf("proxy_cache:%s:%s:%s", prefix, clientID, hashDigest)
+	if userIdentifier == "" {
+		userIdentifier = "anon"
 	}
-	return fmt.Sprintf("proxy_cache:%s:%s", prefix, hashDigest)
+	if clientID != "" {
+		return fmt.Sprintf("proxy_cache:%s:%s:%s:%s", prefix, clientID, userIdentifier, hashDigest)
+	}
+	return fmt.Sprintf("proxy_cache:%s:%s:%s", prefix, userIdentifier, hashDigest)
 }

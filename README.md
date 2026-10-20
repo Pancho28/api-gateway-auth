@@ -53,14 +53,15 @@ api-gateway-auth/
 
 ## 🛠️ Comandos Principales
 
-### 1. Iniciar Infraestructura de Soporte (Docker Compose)
-Levanta PostgreSQL 16, PgBouncer en Transaction Mode y Redis 7:
+### 1. Iniciar Todo el Stack con Docker Compose
+Construye y levanta el API Gateway junto con PostgreSQL 16, PgBouncer y Redis 7:
 ```bash
-docker-compose up -d
+docker-compose up --build -d
 ```
 
 | Contenedor | Puerto Local | Función |
 | :--- | :--- | :--- |
+| **API Gateway (Go)** | `8000` | Gateway perimetral, proxy inverso y autenticación |
 | **PostgreSQL 16** | `5432` | Base de datos persistente (usuarios y roles) |
 | **PgBouncer** | `6432` | Connection Pooler de alto rendimiento |
 | **Redis 7** | `6379` | Caché de sesiones JWT, proxy caching y cuotas de rate limiting |
@@ -135,7 +136,7 @@ La variable de entorno `MICROSERVICES` contiene un JSON donde cada clave represe
 | `url` | `string` | Sí | URL base del microservicio interno. |
 | `api_key` | `string` | No | Clave interna compartida inyectada en `X-Internal-Api-Key`. |
 | `allowed_clients` | `[]string` | **Sí (Zero-Trust)** | Lista de `client_id` autorizados (o `["*"]`). |
-| `required_roles` | `[]string` | No | Lista opcional de roles permitidos (`USER`, `ADMIN`, `CUSTOMER`, `STAFF`, `SUPERADMIN`). |
+| `required_roles` | `[]string` | No | Lista opcional de roles permitidos del Gateway (`"user"`, `"admin"`). |
 | `public_paths` | `[]string` | No | Lista de prefijos de rutas con acceso público/anónimo (ej. `["/marketplace", "/cities"]` o `["*"]`). |
 | `allow_anonymous`| `bool` | No | Si es `true`, todo el microservicio admite peticiones anónimas sin token. |
 
@@ -144,7 +145,10 @@ La variable de entorno `MICROSERVICES` contiene un JSON donde cada clave represe
 ### 3. Registro e Inicio de Sesión de Clientes
 
 #### A. Registro Público de Usuarios (`POST /auth/register`)
-Permite a los comensales o usuarios finales darse de alta en la plataforma. Por seguridad perimetral, asigna rol `CUSTOMER` (o `USER`) e impide auto-asignarse roles privilegiados (`ADMIN`, `STAFF`, `SUPERADMIN`):
+Permite a los usuarios finales darse de alta en la plataforma. Por diseño como IdP perimetral agnóstico:
+* Asigna automáticamente el rol `"user"`.
+* **Prohibición Estricta:** Queda estrictamente PROHIBIDO auto-asignarse el rol `"admin"` por cualquier API. El rol `"admin"` solo se aprovisiona por variables de entorno o seeds del sistema.
+* **UUID Generado por el Cliente (Client-Generated UUID):** Admite un campo opcional `"id"` (UUIDv4). Si el cliente lo envía, el Gateway persiste ese UUID exacto; si se omite, el Gateway genera uno automáticamente.
 
 ```http
 POST /auth/register HTTP/1.1
@@ -153,14 +157,58 @@ Content-Type: application/json
 X-Client-Id: reservas-web
 
 {
-  "email": "comensal@ejemplo.com",
-  "password": "Password123",
-  "role": "CUSTOMER"
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "usuario@ejemplo.com",
+  "password": "Password123"
 }
 ```
 *Respuesta `201 Created` idéntica a `/auth/login` con token JWT emitido inmediatamente.*
 
-#### B. Inicio de Sesión (`POST /auth/login`)
+#### B. Endpoints de Creación y Compensación para Backends (Machine-to-Machine M2M)
+Diseñados para que los backends de las aplicaciones cliente registren usuarios de forma coordinada con sus propias bases de datos y gestionen transacciones distribuidas (Saga/Compensación):
+
+##### 1. Creación M2M (`POST /auth/admin/users`)
+Protegido mediante cabecera de secreto compartido `X-Gateway-Secret`:
+```http
+POST /auth/admin/users HTTP/1.1
+Host: localhost:8000
+Content-Type: application/json
+X-Gateway-Secret: <GATEWAY_SECRET>
+
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "usuario@ejemplo.com",
+  "password": "Password123!",
+  "client_id": "pos-backend",
+  "role": "user",
+  "metadata": {}
+}
+```
+**Respuesta `201 Created`:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "usuario@ejemplo.com",
+  "role": "user",
+  "client_id": "pos-backend"
+}
+```
+
+##### 2. Rollback / Compensación M2M (`DELETE /auth/admin/users/:id`)
+Protegido mediante cabecera `X-Gateway-Secret`. Si el backend cliente sufre un fallo en su propia base de datos tras crear la credencial, llama a este endpoint para eliminar la credencial huérfana de forma atómica:
+```http
+DELETE /auth/admin/users/550e8400-e29b-41d4-a716-446655440000 HTTP/1.1
+Host: localhost:8000
+X-Gateway-Secret: <GATEWAY_SECRET>
+```
+**Respuesta `200 OK`:**
+```json
+{
+  "detail": "Credencial eliminada exitosamente"
+}
+```
+
+#### C. Inicio de Sesión (`POST /auth/login`)
 El inicio de sesión exige obligatoriamente identificar la aplicación cliente que solicita credenciales:
 
 ##### Opción A: Vía Cabecera HTTP (Recomendada)
@@ -195,14 +243,14 @@ Content-Type: application/json
 ```json
 {
   "user": "usuario@comensales.com",
-  "role": "CUSTOMER",
+  "role": "user",
   "client_id": "comensales-app",
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
 ```
 El token generado contiene en sus claims estándar:
 * `sub`: correo electrónico del usuario.
-* `role`: rol RBAC (`USER`, `ADMIN`, `CUSTOMER`, `STAFF`, `SUPERADMIN`).
+* `role`: rol global del Gateway (`"admin"` o `"user"`).
 * `client_id`: identificador de la app cliente.
 * `aud`: audiencia asociada al cliente (`jwt.ClaimStrings{"comensales-app"}`).
 * `exp`: timestamp de expiración UTC.
@@ -227,14 +275,17 @@ X-Client-Id: comensales-app
 
 ### 5. Cabeceras Propagadas hacia los Microservicios Internos
 
+Al validar el JWT en peticiones entrantes hacia los microservicios/backends, el Gateway inyecta de forma fidedigna:
+
 | Cabecera Recibida por el Microservicio | Origen | Descripción |
 | :--- | :--- | :--- |
-| `X-Client-ID` | Gateway (Token) | Identificador verificado de la aplicación consumidora. |
-| `X-User-ID` | Gateway (BD/Redis)| UUID persistente del usuario autenticado. |
+| `X-User-Id` | Gateway (BD/Token) | UUID inmutable del usuario autenticado (`sub` de identidad). |
 | `X-User-Email` | Gateway (Token) | Correo electrónico del usuario autenticado. |
-| `X-User-Role` | Gateway (Token) | Rol RBAC del usuario (`USER` o `ADMIN`). |
-| `X-Internal-Api-Key` | Gateway (Config) | Secreto interno compartido configurado para el microservicio. |
-| `X-Scopes` | Gateway (Token) | Permisos o scopes autorizados (si aplican). |
+| `X-User-Role` | Gateway (Token) | Rol a nivel de sistema del Gateway (`"admin"` o `"user"`). |
+| `X-Client-Id` | Gateway (Token) | Identificador de la aplicación cliente que originó la petición. |
+| `X-Request-Id` | Gateway (Tracing) | UUID de trazabilidad correlacionada para distributed tracing. |
+| `X-Internal-Api-Key` | Gateway (Config) | Secreto interno compartido configurado para el microservicio destino. |
+| `X-Scopes` | Gateway (Token) | Scopes o permisos opcionales delegados. |
 
 ---
 

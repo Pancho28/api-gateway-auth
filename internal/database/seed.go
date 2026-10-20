@@ -8,6 +8,7 @@ import (
 	"api-gateway/internal/config"
 	"api-gateway/internal/models"
 	"api-gateway/internal/security"
+
 	"github.com/google/uuid"
 )
 
@@ -20,7 +21,7 @@ func InitializeAdmin(ctx context.Context, db UserRepository, cfg *config.Config)
 	}
 
 	if existingUser != nil {
-		log.Printf("[SEED] El administrador ya existe en el sistema: %s", cfg.EmailAdmin)
+		log.Println("[SEED] El usuario administrador inicial ya se encuentra configurado en el sistema.")
 		return nil
 	}
 
@@ -33,13 +34,13 @@ func InitializeAdmin(ctx context.Context, db UserRepository, cfg *config.Config)
 		ID:             uuid.New().String(),
 		Email:          cfg.EmailAdmin,
 		HashedPassword: hashedPassword,
-		Role:           "ADMIN",
+		Role:           models.RoleAdmin,
 	}
 
 	if err := db.CreateUser(ctx, adminUser); err != nil {
 		return fmt.Errorf("error al insertar administrador inicial: %w", err)
 	}
 
-	log.Printf("[SEED] Administrador inicial creado exitosamente: %s (Rol: ADMIN)", cfg.EmailAdmin)
+	log.Println("[SEED] Usuario administrador inicial creado y aprovisionado exitosamente.")
 	return nil
 }

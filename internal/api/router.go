@@ -64,7 +64,14 @@ func SetupRouter(
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/register", authHandler.Register)
 	})
 
-	// 3. Rutas de Gestión de Usuarios (Requieren Rol ADMIN o SUPERADMIN)
+	// 3. Rutas M2M para Backends de Aplicaciones Clientes (Protegidas por X-Gateway-Secret)
+	r.Group(func(m2m chi.Router) {
+		m2m.Use(middleware.RequireGatewaySecret(cfg.GatewaySecret))
+		m2m.With(rateLimiter.Limit(redis_rate.PerMinute(60))).Post("/auth/admin/users", userHandler.CreateUserM2M)
+		m2m.With(rateLimiter.Limit(redis_rate.PerMinute(60))).Delete("/auth/admin/users/{id}", userHandler.DeleteUserM2M)
+	})
+
+	// 4. Rutas de Gestión de Usuarios Administrativos (Requiere Rol admin)
 	r.Group(func(admin chi.Router) {
 		admin.Use(authMiddleware.Authenticate)
 		admin.Use(middleware.RequireAdmin)

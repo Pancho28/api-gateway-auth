@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -76,18 +77,21 @@ func (m *AuthMiddleware) AuthenticateOptional(next http.Handler) http.Handler {
 // resolveUserFromAuthHeader procesa la cabecera Authorization y resuelve el usuario autenticado
 func (m *AuthMiddleware) resolveUserFromAuthHeader(ctx context.Context, authHeader, reqClientID string) (*models.User, int, string) {
 	if !strings.HasPrefix(authHeader, "Bearer ") {
+		log.Printf("[AUTH] [TOKEN_REJECTED] Formato de autorización no es Bearer")
 		return nil, http.StatusUnauthorized, `{"detail":"No se pudieron validar las credenciales [E-08]"}`
 	}
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 	claims, err := security.ValidateToken(tokenStr, m.cfg.SecretKey)
 	if err != nil {
+		log.Printf("[AUTH] [TOKEN_INVALID] Fallo al validar token Bearer: %v", err)
 		return nil, http.StatusUnauthorized, `{"detail":"No se pudieron validar las credenciales [E-08]"}`
 	}
 
 	// Token Binding Check: si la petición incluye X-Client-Id, debe coincidir estrictamente con el token
 	reqClientID = strings.TrimSpace(reqClientID)
 	if reqClientID != "" && claims.ClientID != "" && reqClientID != claims.ClientID {
+		log.Printf("[SECURITY] [TOKEN_BINDING_MISMATCH] Token ClientID ('%s') != Request ClientID ('%s')", claims.ClientID, reqClientID)
 		return nil, http.StatusUnauthorized, `{"detail":"Contexto de seguridad inconsistente [E-02]"}`
 	}
 
@@ -101,11 +105,11 @@ func (m *AuthMiddleware) resolveUserFromAuthHeader(ctx context.Context, authHead
 			ID:       session.ID,
 			Email:    session.Email,
 			Role:     session.Role,
-			ClientID: session.ClientID,
+			ClientID: claims.ClientID,
 			Scopes:   session.Scopes,
 		}
 		if currentUser.ClientID == "" {
-			currentUser.ClientID = claims.ClientID
+			currentUser.ClientID = session.ClientID
 		}
 		if len(currentUser.Scopes) == 0 {
 			currentUser.Scopes = claims.Scopes
@@ -134,7 +138,7 @@ func (m *AuthMiddleware) resolveUserFromAuthHeader(ctx context.Context, authHead
 	return user, 0, ""
 }
 
-// RequireAdmin asegura que el usuario en el contexto tenga rol de ADMIN o SUPERADMIN
+// RequireAdmin asegura que el usuario en el contexto tenga rol de admin
 func RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, ok := r.Context().Value(UserContextKey).(*models.User)
@@ -142,13 +146,38 @@ func RequireAdmin(next http.Handler) http.Handler {
 			http.Error(w, `{"detail":"Permisos insuficientes para el recurso [E-09]"}`, http.StatusForbidden)
 			return
 		}
-		role := strings.ToUpper(user.Role)
-		if role != "ADMIN" && role != "SUPERADMIN" {
+		role := strings.ToLower(strings.TrimSpace(user.Role))
+		if role != models.RoleAdmin {
 			http.Error(w, `{"detail":"Permisos insuficientes para el recurso [E-09]"}`, http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RequireGatewaySecret verifica que la petición entrante incluya un secreto compartido válido
+// a través de la cabecera X-Gateway-Secret o Authorization: Bearer <secret>
+func RequireGatewaySecret(gatewaySecret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			providedSecret := strings.TrimSpace(r.Header.Get("X-Gateway-Secret"))
+			if providedSecret == "" {
+				authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+				if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+					providedSecret = strings.TrimSpace(authHeader[7:])
+				}
+			}
+
+			if providedSecret == "" || gatewaySecret == "" || providedSecret != gatewaySecret {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"No se pudieron validar las credenciales [E-08]"}`))
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // GetUserFromContext extrae el usuario autenticado del contexto si existe

@@ -75,6 +75,7 @@ func (s *ServiceConfig) IsRoleAllowed(role string) bool {
 type Config struct {
 	Port                     string
 	SecretKey                string
+	GatewaySecret            string
 	Algorithm                string
 	AccessTokenExpireMinutes int
 
@@ -120,9 +121,16 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env")
 
+	secretKey := getEnv("SECRET_KEY", "")
+	gatewaySecret := getEnv("GATEWAY_SECRET", "")
+	if gatewaySecret == "" {
+		gatewaySecret = secretKey
+	}
+
 	cfg := &Config{
 		Port:                     getEnv("PORT", "8000"),
-		SecretKey:                getEnv("SECRET_KEY", ""),
+		SecretKey:                secretKey,
+		GatewaySecret:            gatewaySecret,
 		Algorithm:                getEnv("ALGORITHM", "HS256"),
 		AccessTokenExpireMinutes: getEnvInt("ACCESS_TOKEN_EXPIRE_MINUTES", 30),
 
