@@ -66,8 +66,14 @@ Sus responsabilidades fundamentales son:
 
 Con el fin de evolucionar este Gateway hacia una arquitectura Enterprise robusta, escalable y altamente performante, se establece la siguiente hoja de ruta basada en las prioridades del proyecto:
 
+> [!IMPORTANT]
+> **Metodología Transversal Obligatoria: TDD (Test-Driven Development)**  
+> Todas las fases y nuevas implementaciones del Gateway deben desarrollarse rigurosamente bajo el ciclo **TDD**:
+> 1. **Fase Red:** Diseñar y escribir las pruebas automatizadas (`*_test.go` o `test/api_test.go`) que verifiquen el nuevo comportamiento antes de programar la solución.
+> 2. **Fase Green:** Implementar el código atómico y mínimo necesario para que las pruebas pasen satisfactoriamente.
+> 3. **Fase Refactor:** Optimizar el diseño, la memoria y el rendimiento manteniendo la suite 100% en verde (`go test -v ./...`).
+
 ### Fase 1: Hardening de Seguridad Inmediato (Quick Wins)
-*Nota de Metodología:* Todas las tareas de esta fase se desarrollarán rigurosamente bajo **TDD** (Fase Red -> Fase Green -> Fase Refactor).
 
 *   [x] Reforzar los esquemas de Pydantic con Regex para contraseñas (mínimo 8, máximo 40 caracteres con letras y números), límite de email (máximo 50 caracteres), max-lengths de seguridad y `Literal["ADMIN", "USER"]` para roles.
 *   [x] Modificar `ProxyService` para aplicar una purga estricta (stripping) de cabeceras de confianza antes de procesar la petición hacia la red interna.
@@ -96,14 +102,29 @@ Con el fin de evolucionar este Gateway hacia una arquitectura Enterprise robusta
     *   [x] **Rate Limiting Distribuido:** Centralizar cuotas en Redis para escalabilidad horizontal con fallback automático a memoria si Redis no está activo.
 
 ### Fase 4: Observabilidad y Circuit Breaker
-*   **Tracing Distribuido:** Integración con OpenTelemetry para inyectar `Trace-IDs` en las cabeceras proxy, permitiendo seguir el recorrido de la petición en herramientas como Jaeger o Datadog.
-*   **Circuit Breaker:** Si el microservicio interno falla repetidas veces, el Gateway debe "abrir el circuito" y dejar de enviarle tráfico temporalmente (para evitar saturarlo mientras se recupera) devolviendo una respuesta *Fall-back* o un error 503 rápido.
+*   **Tracing Distribuido con Jaeger (OpenTelemetry OTLP):**
+    *   **Backend de Telemetría Seleccionado:** **Jaeger All-in-One** (`jaegertracing/all-in-one:latest`), desplegado como servicio interno en el mismo proyecto de Railway sobre la red privada (*Mesh IPv6*), garantizando **$0 de coste por transferencia** y latencia sub-milisegundo (<0.5 ms).
+    *   **Protocolo Estándar:** Receptor OTLP/HTTP en el puerto interno `4318` (`http://jaeger.railway.internal:4318`), asegurando total compatibilidad sin cambios de protocolo entre **Go (Gateway)**, **NestJS/Next.js (ReservasManager)** y **Python (Pipelines de ETLs)**.
+    *   **Inyección y Propagación:** El Gateway actúa como emisor raíz de la transacción, inyectando cabeceras estándar W3C `traceparent` hacia los microservicios downstream para consolidar diagramas en cascada (*waterfall/flamegraph*).
+    *   **Dashboard Visual:** Interfaz web de Jaeger expuesta de forma segura en el puerto `16686` para auditoría y visualización de trazas.
+*   **Circuit Breaker (Disyuntor Perimetral):**
+    *   Implementación de disyuntor automático ante fallos reiterados en microservicios internos (timeouts o errores 5xx consecutivos).
+    *   Estados: *Closed* (operación normal), *Open* (corte de tráfico y respuesta inmediata `503 Service Unavailable [E-05]` para proteger el microservicio y evitar saturación de descriptores de sockets en el Gateway) y *Half-Open* (sondeo controlado de recuperación).
 
 ### Fase 5: Aislamiento y Particionamiento de Clientes (Zero-Trust en Go)
 *   [x] **Requerimiento Estricto de `X-Client-Id`:** Obligatoriedad de identificar el frontend emisor en `/auth/login` (rechazando peticiones anónimas con `400 Bad Request`).
 *   [x] **Token Binding:** Validación de correspondencia entre el `client_id` embebido en el JWT y la cabecera `X-Client-Id` de la petición HTTP (`401 Unauthorized` si discrepan).
 *   [x] **Zero-Trust Deny-by-Default:** Todo microservicio en `MICROSERVICES` debe declarar `allowed_clients` explícitos; los servicios sin configuración deniegan acceso perimetral con `403 Forbidden`.
 *   [x] **Propagación Segura & Anti-Spoofing:** Purgado de cabeceras de cliente no confiables e inyección fidedigna aguas abajo de `X-Client-ID`, `X-Scopes`, `X-User-ID`, `X-User-Email`, `X-User-Role` y `X-Internal-Api-Key`.
+
+### Fase 6: Ciclo de Vida de Sesiones & Operabilidad Perimetral
+*   [x] **Política Estricta de Sesión de 1 Hora (Sin Refresh Token):**
+    *   Vida útil inmutable del token JWT fijada a **60 minutos** (`ACCESS_TOKEN_EXPIRE_MINUTES=60`).
+    *   TTL de persistencia de sesión en Redis (`session:{email}`) alineado a **60 minutos**.
+    *   **Comportamiento de Seguridad:** No existe renovación automática de tokens (*Zero Auto-Refresh*). Cumplidos los 60 minutos, el token expira de forma sincronizada en firma criptográfica y en caché de Redis, forzando la terminación inmediata de la sesión y requiriendo un nuevo inicio de sesión explícito (`POST /auth/login`).
+*   [ ] **Revocación Activa de Sesión (`POST /auth/logout`):** Endpoint perimetral autenticado que elimina atómicamente la clave `session:{email}` en Redis ante el cierre voluntario de sesión en las aplicaciones clientes antes de cumplirse la hora.
+*   [ ] **Exposición de Métricas Prometheus (`GET /metrics`):** Instrumentación perimetral para recolectar latencias (p50, p95, p99), throughput de peticiones, ratios de acierto de caché (`X-Cache: HIT/MISS`) y códigos de estado HTTP aguas abajo.
+*   [ ] **Integración Continua CI/CD (`.github/workflows/ci.yml`):** Pipeline automatizado para ejecución de la suite de pruebas `go test -v ./...` y validación de build de Docker en cada push/PR.
 
 
 ---
@@ -116,7 +137,7 @@ Según lo estipulado en `agent.md`, toda implementación correspondiente a la Fa
     *   [ADR-001: Migración de MySQL a PostgreSQL con asyncpg y Connection Pooling mediante PgBouncer](docs/adr/0001-migracion-postgresql-asyncpg-pgbouncer.md).
     *   [ADR-002: Estrategia de Caché de Sesiones, Proxy Caching y Rate Limiting usando Redis](docs/adr/0002-estrategia-cache-sesiones-rate-limiting-redis.md).
 *   *Próximos ADRs a crear:* 
-    *   `ADR-003: Trazabilidad Distribuida con OpenTelemetry y Circuit Breaking.`
+    *   `ADR-003: Trazabilidad Distribuida con OpenTelemetry (Jaeger) y Resiliencia con Circuit Breaking.`
 
 ---
 

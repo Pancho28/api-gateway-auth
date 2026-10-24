@@ -104,7 +104,7 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 	cfg := &config.Config{
 		SecretKey:                "test-very-secure-secret-key-123456",
 		GatewaySecret:            "test-gateway-secret",
-		AccessTokenExpireMinutes: 30,
+		AccessTokenExpireMinutes: 60,
 		RedisCacheTTL:            60 * time.Second,
 		Microservices: map[string]config.ServiceConfig{
 			"shop": {

@@ -67,6 +67,19 @@ services:
     networks:
       - gateway-network
 
+  # Telemetría y Tracing Distribuido (Jaeger All-in-One)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: gateway_auth_jaeger
+    restart: unless-stopped
+    ports:
+      - "4318:4318"   # Receptor OTLP HTTP
+      - "16686:16686" # Web UI Dashboard
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - gateway-network
+
   # API Gateway & Centralized Auth Service (Go)
   gateway:
     build:

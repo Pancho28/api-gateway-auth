@@ -65,6 +65,7 @@ docker-compose up --build -d
 | **PostgreSQL 16** | `5432` | Base de datos persistente (usuarios y roles) |
 | **PgBouncer** | `6432` | Connection Pooler de alto rendimiento |
 | **Redis 7** | `6379` | Caché de sesiones JWT, proxy caching y cuotas de rate limiting |
+| **Jaeger All-in-One** | `4318` / `16686` | Telemetría OTLP y Dashboard web de tracing distribuido |
 
 ### 2. Ejecución Local en Desarrollo
 ```bash
@@ -85,6 +86,14 @@ go build -ldflags="-s -w" -o gateway ./cmd/gateway
 # O construir la imagen Docker para producción en Railway:
 docker build -t api-gateway .
 ```
+
+---
+
+## 🧪 Metodología de Desarrollo: Test-Driven Development (TDD)
+El ciclo de ingeniería de este Gateway sigue de forma estricta el estándar **TDD (Red -> Green -> Refactor)**:
+1. **Fase Red (Escribir Pruebas Primero):** Antes de modificar o añadir código fuente, se deben crear o actualizar las pruebas en `*_test.go` o en `test/api_test.go` que comprueben la nueva funcionalidad o caso de fallo.
+2. **Fase Green (Hacer Pasar la Prueba):** Implementar la solución mínima, atómica e idiomática en Go para que las pruebas pasen.
+3. **Fase Refactor (Optimizar y Limpiar):** Mejorar legibilidad, allocations de memoria y rendimiento asegurando que el 100% de la suite de pruebas permanezca en verde (`go test -v ./...`).
 
 ---
 

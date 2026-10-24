@@ -132,7 +132,7 @@ func Load() (*Config, error) {
 		SecretKey:                secretKey,
 		GatewaySecret:            gatewaySecret,
 		Algorithm:                getEnv("ALGORITHM", "HS256"),
-		AccessTokenExpireMinutes: getEnvInt("ACCESS_TOKEN_EXPIRE_MINUTES", 30),
+		AccessTokenExpireMinutes: getEnvInt("ACCESS_TOKEN_EXPIRE_MINUTES", 60),
 
 		DBUser:     getEnv("DB_USER", "postgres"),
 		DBPassword: getEnv("DB_PASSWORD", "postgres"),
