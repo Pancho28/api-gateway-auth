@@ -26,8 +26,8 @@ import (
 // Máximo tamaño de respuesta a almacenar en caché de Redis (1 MB) para prevenir OOM (Solución Vulnerabilidad 1)
 const MaxCacheableBodySize = 1024 * 1024
 
-// Cabeceras sensibles que se eliminan para prevenir Header Spoofing
-var blockedHeaders = map[string]bool{
+// Cabeceras hop-by-hop y de transporte que deben eliminarse
+var hopByHopHeaders = map[string]bool{
 	"host":                true,
 	"content-length":      true,
 	"connection":          true,
@@ -39,13 +39,17 @@ var blockedHeaders = map[string]bool{
 	"trailers":            true,
 	"transfer-encoding":   true,
 	"upgrade":             true,
-	"x-internal-api-key":  true,
-	"x-user-id":           true,
-	"x-user-email":        true,
-	"x-user-role":         true,
-	"x-client-id":         true,
-	"x-scopes":            true,
-	"x-audience":          true,
+}
+
+// Cabeceras reservadas de autoridad que son propiedad exclusiva del API Gateway
+// y JAMÁS pueden ser enviadas o suplantadas por el cliente (incluso si estuvieran en passthrough_headers)
+var reservedAuthorityHeaders = map[string]bool{
+	"x-internal-api-key": true,
+	"x-user-id":          true,
+	"x-user-email":       true,
+	"x-user-role":        true,
+	"x-scopes":           true,
+	"x-request-id":       true,
 }
 
 // CachedResponse estructura para almacenar respuestas de peticiones GET en Redis
@@ -165,23 +169,58 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 			}
 			req.URL.RawQuery = r.URL.RawQuery
 
-			// Purgar cabeceras sensibles preveniendo spoofing
+			// =========================================================================
+			// Saneamiento de Cabeceras Anti-Spoofing en 3 Fases (SPEC_API_GATEWAY_AUTH)
+			// =========================================================================
+
+			// FASE 1 y FASE 2: Purgado de hop-by-hop, cabeceras reservadas y X-* no autorizadas
 			for k := range req.Header {
-				if blockedHeaders[strings.ToLower(k)] {
+				lowerK := strings.ToLower(strings.TrimSpace(k))
+
+				// Purgar cabeceras hop-by-hop
+				if hopByHopHeaders[lowerK] {
 					req.Header.Del(k)
+					continue
+				}
+
+				// Fase 2: Blindaje inmutable de cabeceras de autoridad
+				// (Incluso si estuvieran por error en passthrough_headers, el cliente jamás puede suplantarlas)
+				if reservedAuthorityHeaders[lowerK] {
+					req.Header.Del(k)
+					continue
+				}
+
+				// Fase 1: Toda cabecera que comience con X- debe eliminarse a menos que sea X-Client-Id o esté en passthrough_headers
+				if strings.HasPrefix(lowerK, "x-") {
+					if lowerK == "x-client-id" {
+						// X-Client-Id se permite y será validada/reemplazada en Fase 3
+						continue
+					}
+					if serviceConfig.IsHeaderPassthroughAllowed(lowerK) {
+						// Limpiar valores contra inyección CRLF (\r, \n)
+						vals := req.Header[k]
+						req.Header.Del(k)
+						for _, val := range vals {
+							cleanVal := strings.ReplaceAll(strings.ReplaceAll(val, "\r", ""), "\n", "")
+							req.Header.Add(k, cleanVal)
+						}
+					} else {
+						req.Header.Del(k)
+					}
 				}
 			}
 
-			// Inyectar API Key interna si está configurada
+			// FASE 3: Inyección Fidedigna hacia el Microservicio
 			if serviceConfig.APIKey != "" {
 				req.Header.Set("X-Internal-Api-Key", serviceConfig.APIKey)
 			}
 
-			// Inyectar X-Request-Id para distributed tracing
+			// Inyectar X-Request-Id para distributed tracing (sanitizado contra CRLF)
 			requestID := chimiddleware.GetReqID(r.Context())
 			if requestID == "" {
 				requestID = r.Header.Get("X-Request-Id")
 			}
+			requestID = strings.ReplaceAll(strings.ReplaceAll(requestID, "\r", ""), "\n", "")
 			if requestID == "" {
 				requestID = uuid.New().String()
 			}

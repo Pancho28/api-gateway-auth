@@ -222,3 +222,135 @@ func TestProxyServiceCacheHitAndMiss(t *testing.T) {
 		assert.Equal(t, 1, callCount)
 	}
 }
+
+func TestProxyServiceAntiSpoofingAndPassthroughHeaders(t *testing.T) {
+	var receivedHeaders http.Header
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer backend.Close()
+
+	cfg := &config.Config{
+		Microservices: map[string]config.ServiceConfig{
+			"reservas": {
+				URL:                backend.URL,
+				APIKey:             "secret-reservas-key",
+				AllowedClients:     []string{"reservas-web"},
+				PassthroughHeaders: []string{"X-Restaurant-Id", "X-Timezone"},
+			},
+			"ventas": {
+				URL:            backend.URL,
+				APIKey:         "secret-ventas-key",
+				AllowedClients: []string{"reservas-web"},
+			},
+			"rogue": {
+				URL:                backend.URL,
+				APIKey:             "secret-rogue-key",
+				AllowedClients:     []string{"reservas-web"},
+				PassthroughHeaders: []string{"X-User-Id", "X-Internal-Api-Key", "X-User-Role", "X-User-Email", "X-Scopes", "X-Request-Id"},
+			},
+		},
+	}
+
+	rdb := redis.NewClient(&config.Config{
+		RedisHost: "localhost",
+		RedisPort: 6379,
+	})
+	svc := NewService(cfg, rdb)
+
+	currentUser := &models.User{
+		ID:       "verified-user-uuid",
+		Email:    "legit@restaurant.com",
+		Role:     "user",
+		ClientID: "reservas-web",
+		Scopes:   []string{"reservas:read"},
+	}
+
+	// Caso 1: Cabeceras arbitrarias X-* (ej. X-Staff-Role, X-Custom-Hack) deben ser purgadas
+	t.Run("Arbitrary X-* headers are stripped", func(t *testing.T) {
+		receivedHeaders = nil
+		req := httptest.NewRequest(http.MethodPost, "/reservas/menu", nil)
+		req.Header.Set("X-Staff-Role", "RESTAURANT_ADMIN")
+		req.Header.Set("X-Custom-Hack", "123")
+		req.Header.Set("X-Injected-Header", "malicious")
+		rec := httptest.NewRecorder()
+
+		svc.ForwardRequest(rec, req, "reservas/menu", currentUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, receivedHeaders)
+		assert.Empty(t, receivedHeaders.Get("X-Staff-Role"), "Cabecera arbitraria X-Staff-Role debe ser eliminada")
+		assert.Empty(t, receivedHeaders.Get("X-Custom-Hack"), "Cabecera arbitraria X-Custom-Hack debe ser eliminada")
+		assert.Empty(t, receivedHeaders.Get("X-Injected-Header"), "Cabecera arbitraria X-Injected-Header debe ser eliminada")
+	})
+
+	// Caso 2: Cabeceras permitidas en passthrough_headers pasan intactas (case-insensitive)
+	t.Run("Allowed passthrough headers are forwarded case-insensitively", func(t *testing.T) {
+		receivedHeaders = nil
+		req := httptest.NewRequest(http.MethodPost, "/reservas/tables", nil)
+		req.Header.Set("x-restaurant-id", "rest-uuid-999")
+		req.Header.Set("X-TIMEZONE", "America/Santiago")
+		rec := httptest.NewRecorder()
+
+		svc.ForwardRequest(rec, req, "reservas/tables", currentUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, receivedHeaders)
+		assert.Equal(t, "rest-uuid-999", receivedHeaders.Get("X-Restaurant-Id"), "X-Restaurant-Id debe pasar al microservicio")
+		assert.Equal(t, "America/Santiago", receivedHeaders.Get("X-Timezone"), "X-Timezone debe pasar al microservicio")
+	})
+
+	// Caso 3: Cabeceras passthrough de un microservicio son bloqueadas en otro microservicio que no las tiene declaradas
+	t.Run("Passthrough headers blocked on services without them", func(t *testing.T) {
+		receivedHeaders = nil
+		req := httptest.NewRequest(http.MethodPost, "/ventas/items", nil)
+		req.Header.Set("X-Restaurant-Id", "rest-uuid-999")
+		req.Header.Set("X-Timezone", "America/Santiago")
+		rec := httptest.NewRecorder()
+
+		svc.ForwardRequest(rec, req, "ventas/items", currentUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, receivedHeaders)
+		assert.Empty(t, receivedHeaders.Get("X-Restaurant-Id"), "X-Restaurant-Id debe ser bloqueada en ventas")
+		assert.Empty(t, receivedHeaders.Get("X-Timezone"), "X-Timezone debe ser bloqueada en ventas")
+	})
+
+	// Caso 4: Blindaje inmutable de cabeceras de autoridad (Anti-Spoofing estricto)
+	t.Run("Reserved authority headers cannot be spoofed even if in passthrough", func(t *testing.T) {
+		receivedHeaders = nil
+		req := httptest.NewRequest(http.MethodPost, "/rogue/action", nil)
+		req.Header.Set("X-User-Id", "spoofed-uuid-attacker")
+		req.Header.Set("X-Internal-Api-Key", "spoofed-api-key")
+		req.Header.Set("X-User-Role", "ADMIN")
+		req.Header.Set("X-User-Email", "attacker@evil.com")
+		req.Header.Set("X-Scopes", "all:write")
+		rec := httptest.NewRecorder()
+
+		svc.ForwardRequest(rec, req, "rogue/action", currentUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, receivedHeaders)
+		assert.Equal(t, "verified-user-uuid", receivedHeaders.Get("X-User-Id"), "X-User-Id debe ser el del usuario verificado")
+		assert.Equal(t, "secret-rogue-key", receivedHeaders.Get("X-Internal-Api-Key"), "X-Internal-Api-Key debe ser la configurada en el Gateway")
+		assert.Equal(t, "user", receivedHeaders.Get("X-User-Role"), "X-User-Role debe ser el rol verificado del usuario")
+		assert.Equal(t, "legit@restaurant.com", receivedHeaders.Get("X-User-Email"), "X-User-Email debe ser el email verificado")
+		assert.Equal(t, "reservas:read", receivedHeaders.Get("X-Scopes"), "X-Scopes debe ser el verificado")
+	})
+
+	// Caso 5: Sanitización de inyección CRLF en valores de cabeceras passthrough
+	t.Run("CRLF characters stripped from passthrough header values", func(t *testing.T) {
+		receivedHeaders = nil
+		req := httptest.NewRequest(http.MethodPost, "/reservas/tables", nil)
+		req.Header["X-Restaurant-Id"] = []string{"rest-123\r\nInjected-Header: evil"}
+		rec := httptest.NewRecorder()
+
+		svc.ForwardRequest(rec, req, "reservas/tables", currentUser)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		require.NotNil(t, receivedHeaders)
+		got := receivedHeaders.Get("X-Restaurant-Id")
+		assert.NotContains(t, got, "\r")
+		assert.NotContains(t, got, "\n")
+		assert.Equal(t, "rest-123Injected-Header: evil", got)
+	})
+}

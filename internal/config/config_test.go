@@ -75,3 +75,74 @@ func TestServiceConfigPartitionRules(t *testing.T) {
 	assert.True(t, wildcardSvc.IsClientAllowed("cualquier-cliente"))
 }
 
+func TestConfigPassthroughHeadersParsing(t *testing.T) {
+	os.Setenv("PORT", "8000")
+	os.Setenv("SECRET_KEY", "test-secret")
+	os.Setenv("MICROSERVICES", `{
+		"reservas": {
+			"url": "http://localhost:4000",
+			"api_key": "key-123",
+			"allowed_clients": ["reservas-web"],
+			"passthrough_headers": ["X-Restaurant-Id", "X-Timezone"]
+		}
+	}`)
+	defer func() {
+		os.Unsetenv("PORT")
+		os.Unsetenv("SECRET_KEY")
+		os.Unsetenv("MICROSERVICES")
+	}()
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Contains(t, cfg.Microservices, "reservas")
+	svc := cfg.Microservices["reservas"]
+	assert.Equal(t, []string{"X-Restaurant-Id", "X-Timezone"}, svc.PassthroughHeaders)
+}
+
+func TestServiceConfigPassthroughHeaders(t *testing.T) {
+	svc := ServiceConfig{
+		URL:                "http://localhost:4000",
+		AllowedClients:     []string{"*"},
+		PassthroughHeaders: []string{"X-Restaurant-Id", "X-Branch-ID"},
+	}
+
+	// 1. Cabeceras permitidas (evaluación case-insensitive)
+	assert.True(t, svc.IsHeaderPassthroughAllowed("X-Restaurant-Id"))
+	assert.True(t, svc.IsHeaderPassthroughAllowed("x-restaurant-id"))
+	assert.True(t, svc.IsHeaderPassthroughAllowed("X-RESTAURANT-ID"))
+	assert.True(t, svc.IsHeaderPassthroughAllowed("x-branch-id"))
+	assert.True(t, svc.IsHeaderPassthroughAllowed("X-Branch-ID"))
+
+	// 2. Cabeceras no permitidas
+	assert.False(t, svc.IsHeaderPassthroughAllowed("X-Staff-Role"))
+	assert.False(t, svc.IsHeaderPassthroughAllowed("X-Custom-Hack"))
+	assert.False(t, svc.IsHeaderPassthroughAllowed(""))
+
+	// 3. Microservicio sin passthrough_headers -> false para cualquier cabecera
+	emptySvc := ServiceConfig{
+		URL:            "http://localhost:4000",
+		AllowedClients: []string{"*"},
+	}
+	assert.False(t, emptySvc.IsHeaderPassthroughAllowed("X-Restaurant-Id"))
+}
+
+func TestServiceConfigCaseInsensitiveRoles(t *testing.T) {
+	// Requerido en minúscula ("user"), usuario con mayúscula ("USER")
+	svcLower := ServiceConfig{
+		RequiredRoles: []string{"user"},
+	}
+	assert.True(t, svcLower.IsRoleAllowed("USER"))
+	assert.True(t, svcLower.IsRoleAllowed("user"))
+	assert.True(t, svcLower.IsRoleAllowed("User"))
+	assert.False(t, svcLower.IsRoleAllowed("admin"))
+
+	// Requerido en mayúscula ("ADMIN"), usuario con minúscula ("admin")
+	svcUpper := ServiceConfig{
+		RequiredRoles: []string{"ADMIN"},
+	}
+	assert.True(t, svcUpper.IsRoleAllowed("admin"))
+	assert.True(t, svcUpper.IsRoleAllowed("ADMIN"))
+	assert.False(t, svcUpper.IsRoleAllowed("user"))
+}
+
+

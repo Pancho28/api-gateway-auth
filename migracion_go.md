@@ -385,19 +385,8 @@ docker-compose up -d
 
 ---
 
-## 9. Próximos Pasos a Seguir (Next Steps / Roadmap)
+## 9. Próximos Pasos y Roadmap
 
-1. **Actualización de Documentación Global del Repositorio:**
-   * Actualizar el [`README.md`](README.md) en la raíz para reflejar la estructura dual del proyecto (`gateway-python/` y `gateway-go/`), la infraestructura compartida con Docker Compose (PostgreSQL 16, PgBouncer, Redis 7) y las instrucciones de ejecución y testing para cada versión.
-   * Actualizar [`SPEC_API_GATEWAY_AUTH.md`](SPEC_API_GATEWAY_AUTH.md) para reflejar la Fase 5: adopción del Gateway en Go como punto de entrada de producción.
-2. **Ejecución del Benchmarking Comparativo:**
-   * Levantar servicios de soporte (`docker-compose up -d`).
-   * Ejecutar los 4 escenarios de prueba documentados en la Sección 8 para registrar datos empíricos de RPS, latencia p50/p99 y consumo de memoria RAM.
-3. **Perfilado Detallado de Memoria y CPU (Profiling):**
-   * Emplear `net/http/pprof` en Go para auditar asignaciones de memoria en heap bajo 10,000 req/s.
-   * Comparar contra el Garbage Collector y fragmentación de memoria de Python.
-4. **Despliegue y Validación en Railway:**
-   * Desplegar la imagen de `gateway-go/Dockerfile` en Railway conectada a PostgreSQL y Redis en la nube.
-   * Configurar variables de entorno y validar reducción efectiva de costes de facturación en el dashboard de Railway.
+Los próximos pasos técnicos, benchmarking comparativo, profiling en Go y tareas de validación y despliegue en Railway se han centralizado y se gestionan activamente en [TODO.md](TODO.md).
 
 

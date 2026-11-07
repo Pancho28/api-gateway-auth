@@ -57,11 +57,12 @@ func SetupRouter(
 	gatewayHandler := handlers.NewGatewayHandler(proxyService)
 	authMiddleware := middleware.NewAuthMiddleware(cfg, db, rdb)
 
-	// 2. Rutas Públicas
+	// 2. Rutas Públicas e Identidad
 	r.Group(func(public chi.Router) {
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(5))).Get("/health", gatewayHandler.HealthCheck)
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/login", authHandler.Login)
 		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/register", authHandler.Register)
+		public.With(rateLimiter.Limit(redis_rate.PerMinute(10))).Post("/auth/logout", authHandler.Logout)
 	})
 
 	// 3. Rutas M2M para Backends de Aplicaciones Clientes (Protegidas por X-Gateway-Secret)

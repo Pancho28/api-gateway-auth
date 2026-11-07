@@ -17,6 +17,7 @@ var (
 
 // TokenOptions define los parámetros para la emisión de un token JWT
 type TokenOptions struct {
+	UserID         string
 	Email          string
 	Role           string
 	ClientID       string
@@ -43,6 +44,7 @@ func GenerateTokenWithOptions(opts TokenOptions) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(now.Add(opts.ExpireDuration)),
 			Audience:  aud,
 		},
+		ID:       opts.UserID,
 		Role:     opts.Role,
 		ClientID: opts.ClientID,
 		Scopes:   opts.Scopes,
@@ -57,9 +59,10 @@ func GenerateTokenWithOptions(opts TokenOptions) (string, error) {
 	return tokenString, nil
 }
 
-// GenerateToken crea un token JWT firmado con HS256 conteniendo el email, el rol y el client_id
-func GenerateToken(email, role, clientID, secretKey string, expireDuration time.Duration) (string, error) {
+// GenerateToken crea un token JWT firmado con HS256 conteniendo el userID, el email, el rol y el client_id
+func GenerateToken(userID, email, role, clientID, secretKey string, expireDuration time.Duration) (string, error) {
 	return GenerateTokenWithOptions(TokenOptions{
+		UserID:         userID,
 		Email:          email,
 		Role:           role,
 		ClientID:       clientID,

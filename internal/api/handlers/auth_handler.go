@@ -124,3 +124,47 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// Logout procesa el cierre de sesión e invalidación de Redis (/auth/logout)
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		log.Printf("[AUTH] [LOGOUT_REJECTED] Formato de autorización ausente o no es Bearer | IP: %s", r.RemoteAddr)
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"detail": "No se pudieron validar las credenciales [E-08]",
+		})
+		return
+	}
+
+	tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	reqClientID := strings.TrimSpace(r.Header.Get("X-Client-Id"))
+
+	err := h.authService.Logout(r.Context(), tokenStr, reqClientID)
+	if err != nil {
+		if errors.Is(err, auth.ErrTokenBindingMismatch) {
+			log.Printf("[SECURITY] [TOKEN_BINDING_MISMATCH] Token Binding Mismatch en Logout | IP: %s", r.RemoteAddr)
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"detail": "Contexto de seguridad inconsistente [E-02]",
+			})
+			return
+		}
+
+		log.Printf("[AUTH] [LOGOUT_FAILED] Token inválido o expirado en Logout: %v | IP: %s", err, r.RemoteAddr)
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"detail": "No se pudieron validar las credenciales [E-08]",
+		})
+		return
+	}
+
+	log.Printf("[AUTH] [LOGOUT_SUCCESS] Sesión cerrada exitosamente | IP: %s", r.RemoteAddr)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"message": "Sesión finalizada exitosamente",
+	})
+}
+
+

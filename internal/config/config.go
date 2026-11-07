@@ -13,13 +13,28 @@ import (
 
 // ServiceConfig define la URL, API Key y reglas de aislamiento de un microservicio aguas abajo
 type ServiceConfig struct {
-	URL              string   `json:"url"`
-	APIKey           string   `json:"api_key"`
-	AllowedClients   []string `json:"allowed_clients"`
-	AllowedAudiences []string `json:"allowed_audiences,omitempty"`
-	RequiredRoles    []string `json:"required_roles,omitempty"`
-	PublicPaths      []string `json:"public_paths,omitempty"`
-	AllowAnonymous   bool     `json:"allow_anonymous,omitempty"`
+	URL                string   `json:"url"`
+	APIKey             string   `json:"api_key"`
+	AllowedClients     []string `json:"allowed_clients"`
+	AllowedAudiences   []string `json:"allowed_audiences,omitempty"`
+	RequiredRoles      []string `json:"required_roles,omitempty"`
+	PublicPaths        []string `json:"public_paths,omitempty"`
+	AllowAnonymous     bool     `json:"allow_anonymous,omitempty"`
+	PassthroughHeaders []string `json:"passthrough_headers,omitempty"`
+}
+
+// IsHeaderPassthroughAllowed verifica si una cabecera HTTP personalizada está en la lista blanca del microservicio
+func (s *ServiceConfig) IsHeaderPassthroughAllowed(headerName string) bool {
+	if len(s.PassthroughHeaders) == 0 {
+		return false
+	}
+	cleanName := strings.ToLower(strings.TrimSpace(headerName))
+	for _, h := range s.PassthroughHeaders {
+		if strings.ToLower(strings.TrimSpace(h)) == cleanName {
+			return true
+		}
+	}
+	return false
 }
 
 // IsPathPublic determina si una sub-ruta del microservicio permite acceso público/anónimo

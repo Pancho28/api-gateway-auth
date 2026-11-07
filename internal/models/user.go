@@ -61,6 +61,7 @@ func (r *UserLoginRequest) Validate() error {
 
 // TokenResponse representa la respuesta entregada tras un login exitoso
 type TokenResponse struct {
+	ID       string `json:"id"`
 	User     string `json:"user"`
 	Role     string `json:"role"`
 	Token    string `json:"token"`
@@ -244,6 +245,7 @@ type UserResponse struct {
 // JWTClaims representa la información decodificada del token con soporte de audiencia y client_id
 type JWTClaims struct {
 	jwt.RegisteredClaims
+	ID       string   `json:"id,omitempty"`
 	Role     string   `json:"role"`
 	ClientID string   `json:"client_id"`
 	Scopes   []string `json:"scopes,omitempty"`

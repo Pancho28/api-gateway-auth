@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("Correo o contraseña incorrectos")
-	ErrEmailAlreadyExists = errors.New("el correo electrónico ya está registrado.")
+	ErrInvalidCredentials   = errors.New("Correo o contraseña incorrectos")
+	ErrEmailAlreadyExists   = errors.New("el correo electrónico ya está registrado.")
+	ErrTokenBindingMismatch = errors.New("contexto de seguridad inconsistente")
 )
 
 
@@ -47,7 +48,7 @@ func (s *Service) Login(ctx context.Context, req *models.UserLoginRequest) (*mod
 	}
 
 	expireDuration := time.Duration(s.cfg.AccessTokenExpireMinutes) * time.Minute
-	tokenStr, err := security.GenerateToken(user.Email, user.Role, req.ClientID, s.cfg.SecretKey, expireDuration)
+	tokenStr, err := security.GenerateToken(user.ID, user.Email, user.Role, req.ClientID, s.cfg.SecretKey, expireDuration)
 	if err != nil {
 		return nil, fmt.Errorf("error al generar token de acceso: %w", err)
 	}
@@ -63,6 +64,7 @@ func (s *Service) Login(ctx context.Context, req *models.UserLoginRequest) (*mod
 	s.redis.SetJSON(ctx, sessionKey, sessionData, expireDuration)
 
 	return &models.TokenResponse{
+		ID:       user.ID,
 		User:     user.Email,
 		Role:     user.Role,
 		Token:    tokenStr,
@@ -107,7 +109,7 @@ func (s *Service) Register(ctx context.Context, req *models.UserRegisterRequest)
 	}
 
 	expireDuration := time.Duration(s.cfg.AccessTokenExpireMinutes) * time.Minute
-	tokenStr, err := security.GenerateToken(newUser.Email, newUser.Role, req.ClientID, s.cfg.SecretKey, expireDuration)
+	tokenStr, err := security.GenerateToken(newUser.ID, newUser.Email, newUser.Role, req.ClientID, s.cfg.SecretKey, expireDuration)
 	if err != nil {
 		return nil, fmt.Errorf("error al generar token de acceso: %w", err)
 	}
@@ -123,10 +125,29 @@ func (s *Service) Register(ctx context.Context, req *models.UserRegisterRequest)
 	s.redis.SetJSON(ctx, sessionKey, sessionData, expireDuration)
 
 	return &models.TokenResponse{
+		ID:       newUser.ID,
 		User:     newUser.Email,
 		Role:     newUser.Role,
 		Token:    tokenStr,
 		ClientID: req.ClientID,
 	}, nil
 }
+
+// Logout invalida la sesión del usuario eliminando su registro de Redis
+func (s *Service) Logout(ctx context.Context, tokenStr, reqClientID string) error {
+	claims, err := security.ValidateToken(tokenStr, s.cfg.SecretKey)
+	if err != nil {
+		return ErrInvalidCredentials
+	}
+
+	reqClientID = strings.TrimSpace(reqClientID)
+	if reqClientID != "" && claims.ClientID != "" && reqClientID != claims.ClientID {
+		return ErrTokenBindingMismatch
+	}
+
+	sessionKey := fmt.Sprintf("session:%s", claims.Subject)
+	s.redis.Delete(ctx, sessionKey)
+	return nil
+}
+
 

@@ -29,18 +29,20 @@ func TestPasswordHashing(t *testing.T) {
 
 func TestJWTTokenLifecycle(t *testing.T) {
 	secret := "super-secret-key-for-testing-purposes-123"
+	userID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 	email := "user@example.com"
 	role := "USER"
 	clientID := "app-comensales"
 
-	// 1. Generar token con ClientID
-	token, err := GenerateToken(email, role, clientID, secret, 30*time.Minute)
+	// 1. Generar token con ClientID y UserID
+	token, err := GenerateToken(userID, email, role, clientID, secret, 30*time.Minute)
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 
 	// 2. Decodificar y validar
 	claims, err := ValidateToken(token, secret)
 	require.NoError(t, err)
+	assert.Equal(t, userID, claims.ID)
 	assert.Equal(t, email, claims.Subject)
 	assert.Equal(t, role, claims.Role)
 	assert.Equal(t, clientID, claims.ClientID)
@@ -48,6 +50,7 @@ func TestJWTTokenLifecycle(t *testing.T) {
 
 	// 3. Generar token con opciones avanzadas (audiencia múltiple y scopes)
 	advToken, err := GenerateTokenWithOptions(TokenOptions{
+		UserID:         userID,
 		Email:          email,
 		Role:           role,
 		ClientID:       clientID,
@@ -59,6 +62,7 @@ func TestJWTTokenLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	advClaims, err := ValidateToken(advToken, secret)
 	require.NoError(t, err)
+	assert.Equal(t, userID, advClaims.ID)
 	assert.Equal(t, []string{"svc-ventas", "svc-stock"}, []string(advClaims.Audience))
 	assert.Equal(t, []string{"read:orders", "write:orders"}, advClaims.Scopes)
 
@@ -67,7 +71,7 @@ func TestJWTTokenLifecycle(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidToken)
 
 	// 5. Token expirado
-	expiredToken, err := GenerateToken(email, role, clientID, secret, -5*time.Minute)
+	expiredToken, err := GenerateToken(userID, email, role, clientID, secret, -5*time.Minute)
 	require.NoError(t, err)
 	_, err = ValidateToken(expiredToken, secret)
 	assert.ErrorIs(t, err, ErrInvalidToken)
@@ -78,6 +82,7 @@ func TestJWTTokenLifecycle(t *testing.T) {
 
 	// 7. Token sin ClientID
 	noClientToken, err := GenerateTokenWithOptions(TokenOptions{
+		UserID:         userID,
 		Email:          email,
 		Role:           role,
 		ClientID:       "",

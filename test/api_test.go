@@ -108,9 +108,10 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 		RedisCacheTTL:            60 * time.Second,
 		Microservices: map[string]config.ServiceConfig{
 			"shop": {
-				URL:            backend.URL,
-				APIKey:         "backend-secret-api-key",
-				AllowedClients: []string{"test-client", "admin-client"},
+				URL:                backend.URL,
+				APIKey:             "backend-secret-api-key",
+				AllowedClients:     []string{"test-client", "admin-client"},
+				PassthroughHeaders: []string{"X-Restaurant-Id"},
 			},
 			"catalog": {
 				URL:            backend.URL,
@@ -173,7 +174,7 @@ func TestHealthCheckEndpoint(t *testing.T) {
 }
 
 func TestAuthLoginEndpoint(t *testing.T) {
-	router, _, _, backend := setupTestEnvironment(t)
+	router, mockDB, cfg, backend := setupTestEnvironment(t)
 	defer backend.Close()
 
 	// 1. Intento de login SIN Client ID -> 400 Bad Request (Requerimiento estricto)
@@ -209,6 +210,13 @@ func TestAuthLoginEndpoint(t *testing.T) {
 	assert.Equal(t, "admin", tokenResp.Role)
 	assert.Equal(t, "admin-client", tokenResp.ClientID)
 	assert.NotEmpty(t, tokenResp.Token)
+	assert.Equal(t, mockDB.users["admin@test.com"].ID, tokenResp.ID)
+	_, errUUID := uuid.Parse(tokenResp.ID)
+	assert.NoError(t, errUUID)
+
+	claims, errClaims := security.ValidateToken(tokenResp.Token, cfg.SecretKey)
+	require.NoError(t, errClaims)
+	assert.Equal(t, tokenResp.ID, claims.ID)
 
 	// 3. Login exitoso con client_id en body JSON
 	bodyWithField, _ := json.Marshal(models.UserLoginRequest{
@@ -226,6 +234,9 @@ func TestAuthLoginEndpoint(t *testing.T) {
 	err = json.Unmarshal(recBodyField.Body.Bytes(), &bodyResp)
 	require.NoError(t, err)
 	assert.Equal(t, "body-client", bodyResp.ClientID)
+	assert.Equal(t, mockDB.users["admin@test.com"].ID, bodyResp.ID)
+	_, errUUID = uuid.Parse(bodyResp.ID)
+	assert.NoError(t, errUUID)
 
 	// 4. Login con contraseña incorrecta
 	badPassBody, _ := json.Marshal(models.UserLoginRequest{
@@ -257,7 +268,7 @@ func TestAuthLoginEndpoint(t *testing.T) {
 }
 
 func TestUsersEndpointPermissions(t *testing.T) {
-	router, _, cfg, backend := setupTestEnvironment(t)
+	router, mockDB, cfg, backend := setupTestEnvironment(t)
 	defer backend.Close()
 
 	newUserBody, _ := json.Marshal(models.AdminUserCreateRequest{
@@ -273,7 +284,7 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recUnauth.Code)
 
 	// 2. Petición autenticada como usuario regular (user) -> 403 Forbidden
-	userToken, err := security.GenerateToken("user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
+	userToken, err := security.GenerateToken(mockDB.users["user@test.com"].ID, "user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqForbidden := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(newUserBody))
@@ -284,7 +295,7 @@ func TestUsersEndpointPermissions(t *testing.T) {
 	assert.Contains(t, recForbidden.Body.String(), "Permisos insuficientes para el recurso [E-09]")
 
 	// 3. Petición autenticada como admin -> 201 Created
-	adminToken, err := security.GenerateToken("admin@test.com", "admin", "admin-client", cfg.SecretKey, 15*time.Minute)
+	adminToken, err := security.GenerateToken(mockDB.users["admin@test.com"].ID, "admin@test.com", "admin", "admin-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqAdmin := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(newUserBody))
@@ -322,7 +333,7 @@ func TestUsersEndpointPermissions(t *testing.T) {
 }
 
 func TestReverseProxyForwardingAndHeaders(t *testing.T) {
-	router, _, cfg, backend := setupTestEnvironment(t)
+	router, mockDB, cfg, backend := setupTestEnvironment(t)
 	defer backend.Close()
 
 	// 1. Petición sin token al proxy -> 401 Unauthorized
@@ -332,7 +343,7 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recUnauth.Code)
 
 	// 2. Petición con token válido y cliente autorizado -> 200 OK y reenvío exitoso
-	userToken, err := security.GenerateToken("user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
+	userToken, err := security.GenerateToken(mockDB.users["user@test.com"].ID, "user@test.com", "user", "test-client", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqAuth := httptest.NewRequest(http.MethodGet, "/shop/items", nil)
@@ -340,6 +351,8 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	reqAuth.Header.Set("X-Client-Id", "test-client")
 	// Intento de spoofing de API Key interna por el cliente
 	reqAuth.Header.Set("X-Internal-Api-Key", "spoofed-key")
+	reqAuth.Header.Set("X-Restaurant-Id", "rest-100")
+	reqAuth.Header.Set("X-Staff-Role", "HACKER")
 	recAuth := httptest.NewRecorder()
 	router.ServeHTTP(recAuth, reqAuth)
 
@@ -354,8 +367,11 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	assert.Equal(t, "user", headers.Get("X-User-Role"))
 	assert.Equal(t, "backend-secret-api-key", headers.Get("X-Internal-Api-Key"))
 	assert.NotEmpty(t, headers.Get("X-User-Id"))
+	assert.Equal(t, mockDB.users["user@test.com"].ID, headers.Get("X-User-Id"))
 	assert.NotEmpty(t, headers.Get("X-Request-Id"))
 	assert.Equal(t, headers.Get("X-Request-Id"), recAuth.Header().Get("X-Request-Id"))
+	assert.Equal(t, "rest-100", headers.Get("X-Restaurant-Id"), "Debe propagar la cabecera passthrough permitida")
+	assert.Empty(t, headers.Get("X-Staff-Role"), "Debe purgar cabeceras arbitrarias X-*")
 
 	// 3. Petición POST con streaming de cuerpo hacia microservicio
 	orderBody := []byte(`{"product_id":"prod-1","qty":2}`)
@@ -384,7 +400,7 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 	assert.Contains(t, recZeroTrust.Body.String(), "Acceso al recurso denegado [E-03]")
 
 	// 6. Particionamiento: Cliente no autorizado en lista blanca -> 403 Forbidden
-	unauthorizedClientToken, err := security.GenerateToken("user@test.com", "USER", "unauthorized-app", cfg.SecretKey, 15*time.Minute)
+	unauthorizedClientToken, err := security.GenerateToken(mockDB.users["user@test.com"].ID, "user@test.com", "USER", "unauthorized-app", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqPartitionDenied := httptest.NewRequest(http.MethodGet, "/shop/items", nil)
@@ -405,7 +421,7 @@ func TestReverseProxyForwardingAndHeaders(t *testing.T) {
 }
 
 func TestAuthRegisterEndpoint(t *testing.T) {
-	router, _, _, backend := setupTestEnvironment(t)
+	router, _, cfg, backend := setupTestEnvironment(t)
 	defer backend.Close()
 
 	// 1. Registro sin Client-ID -> 400 Bad Request [E-01]
@@ -449,10 +465,17 @@ func TestAuthRegisterEndpoint(t *testing.T) {
 	var tokenResp models.TokenResponse
 	err := json.Unmarshal(recValid.Body.Bytes(), &tokenResp)
 	require.NoError(t, err)
+	assert.NotEmpty(t, tokenResp.ID)
+	_, errUUID := uuid.Parse(tokenResp.ID)
+	assert.NoError(t, errUUID)
 	assert.Equal(t, "comensal@test.com", tokenResp.User)
 	assert.Equal(t, "user", tokenResp.Role)
 	assert.Equal(t, "reservas-web", tokenResp.ClientID)
 	assert.NotEmpty(t, tokenResp.Token)
+
+	claims, errClaims := security.ValidateToken(tokenResp.Token, cfg.SecretKey)
+	require.NoError(t, errClaims)
+	assert.Equal(t, tokenResp.ID, claims.ID)
 
 	// 4. Registro con Client-Generated UUID
 	customUUID := "a1b2c3d4-e5f6-47a8-b9c0-1234567890ab"
@@ -467,6 +490,10 @@ func TestAuthRegisterEndpoint(t *testing.T) {
 	recCustomID := httptest.NewRecorder()
 	router.ServeHTTP(recCustomID, reqCustomID)
 	assert.Equal(t, http.StatusCreated, recCustomID.Code)
+	var customResp models.TokenResponse
+	err = json.Unmarshal(recCustomID.Body.Bytes(), &customResp)
+	require.NoError(t, err)
+	assert.Equal(t, customUUID, customResp.ID)
 
 	// 5. Registro duplicado con el mismo correo -> 409 Conflict [E-12]
 	reqDuplicate := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(bodyValid))
@@ -594,7 +621,7 @@ func TestPublicPathsProxying(t *testing.T) {
 	assert.Contains(t, recPrivateNoToken.Body.String(), "E-08")
 
 	// 3. Acceso a sub-ruta pública pero CON token válido de comensal -> 200 OK y propaga X-User-ID
-	guestToken, err := security.GenerateToken("comensal@test.com", "user", "reservas-web", cfg.SecretKey, 15*time.Minute)
+	guestToken, err := security.GenerateToken("guest-uuid-123", "comensal@test.com", "user", "reservas-web", cfg.SecretKey, 15*time.Minute)
 	require.NoError(t, err)
 
 	reqPublicWithToken := httptest.NewRequest(http.MethodGet, "/catalog/items", nil)
@@ -612,5 +639,85 @@ func TestPublicPathsProxying(t *testing.T) {
 	assert.Equal(t, "guest-uuid-123", headersWithUser.Get("X-User-ID"))
 	assert.NotEmpty(t, headersWithUser.Get("X-Request-Id"))
 }
+
+func TestAuthLogoutEndpoint(t *testing.T) {
+	router, _, _, backend := setupTestEnvironment(t)
+	defer backend.Close()
+
+	// 1. Petición a /auth/logout sin Authorization header -> 401 [E-08]
+	reqNoAuth := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	recNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(recNoAuth, reqNoAuth)
+	assert.Equal(t, http.StatusUnauthorized, recNoAuth.Code)
+	assert.Contains(t, recNoAuth.Body.String(), "No se pudieron validar las credenciales [E-08]")
+
+	// 2. Petición a /auth/logout con token malformado -> 401 [E-08]
+	reqBadToken := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	reqBadToken.Header.Set("Authorization", "Bearer invalid-malformed-token")
+	recBadToken := httptest.NewRecorder()
+	router.ServeHTTP(recBadToken, reqBadToken)
+	assert.Equal(t, http.StatusUnauthorized, recBadToken.Code)
+	assert.Contains(t, recBadToken.Body.String(), "No se pudieron validar las credenciales [E-08]")
+
+	// 3. Login de usuario para obtener token y persistir sesión en Redis
+	loginBody, _ := json.Marshal(models.UserLoginRequest{
+		Email:    "user@test.com",
+		Password: "UserPass1",
+		ClientID: "test-client",
+	})
+	reqLogin := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(loginBody))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	recLogin := httptest.NewRecorder()
+	router.ServeHTTP(recLogin, reqLogin)
+	require.Equal(t, http.StatusOK, recLogin.Code)
+
+	var tokenResp models.TokenResponse
+	err := json.Unmarshal(recLogin.Body.Bytes(), &tokenResp)
+	require.NoError(t, err)
+	require.NotEmpty(t, tokenResp.Token)
+
+	// Verificar que la sesión efectivamente existe en Redis tras el login
+	rdb := redis.NewClient(&config.Config{
+		RedisHost: "localhost",
+		RedisPort: 6379,
+		RedisDB:   15,
+	})
+	sessionKey := "session:user@test.com"
+	var sessionData models.SessionData
+	assert.True(t, rdb.GetJSON(context.Background(), sessionKey, &sessionData), "La sesión debe residir en Redis tras login")
+	assert.Equal(t, "user@test.com", sessionData.Email)
+
+	// 4. Intento de logout con Token Binding Mismatch (cliente diferente al token) -> 401 [E-02]
+	reqMismatch := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	reqMismatch.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	reqMismatch.Header.Set("X-Client-Id", "imposter-client")
+	recMismatch := httptest.NewRecorder()
+	router.ServeHTTP(recMismatch, reqMismatch)
+	assert.Equal(t, http.StatusUnauthorized, recMismatch.Code)
+	assert.Contains(t, recMismatch.Body.String(), "Contexto de seguridad inconsistente [E-02]")
+
+	// 5. Logout exitoso con token y X-Client-Id válido -> 200 OK
+	reqLogout := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	reqLogout.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	reqLogout.Header.Set("X-Client-Id", "test-client")
+	recLogout := httptest.NewRecorder()
+	router.ServeHTTP(recLogout, reqLogout)
+	assert.Equal(t, http.StatusOK, recLogout.Code)
+	assert.Contains(t, recLogout.Body.String(), "Sesión finalizada exitosamente")
+
+	// Verificar que la sesión en Redis fue completamente eliminada
+	var sessionAfter models.SessionData
+	assert.False(t, rdb.GetJSON(context.Background(), sessionKey, &sessionAfter), "La sesión debe haber sido purgada de Redis")
+
+	// 6. Contrato idempotente: Si la sesión ya no está en Redis, igualmente responder 200 OK
+	reqLogoutSecond := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	reqLogoutSecond.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	reqLogoutSecond.Header.Set("X-Client-Id", "test-client")
+	recLogoutSecond := httptest.NewRecorder()
+	router.ServeHTTP(recLogoutSecond, reqLogoutSecond)
+	assert.Equal(t, http.StatusOK, recLogoutSecond.Code, "Debe retornar 200 OK aunque la sesión ya no esté en Redis")
+	assert.Contains(t, recLogoutSecond.Body.String(), "Sesión finalizada exitosamente")
+}
+
 
 
