@@ -61,11 +61,7 @@ func TestServiceLogin(t *testing.T) {
 		AccessTokenExpireMinutes: 60,
 	}
 	repo := newMockUserRepo()
-	rdb := redis.NewClient(&config.Config{
-		RedisHost: "localhost",
-		RedisPort: 6379,
-		RedisDB:   15,
-	})
+	rdb := redis.NewInMemoryClient()
 
 	svc := NewService(repo, rdb, cfg)
 
@@ -128,11 +124,7 @@ func TestServiceRegister(t *testing.T) {
 		AccessTokenExpireMinutes: 60,
 	}
 	repo := newMockUserRepo()
-	rdb := redis.NewClient(&config.Config{
-		RedisHost: "localhost",
-		RedisPort: 6379,
-		RedisDB:   15,
-	})
+	rdb := redis.NewInMemoryClient()
 
 	svc := NewService(repo, rdb, cfg)
 
@@ -190,11 +182,7 @@ func TestServiceLogout(t *testing.T) {
 		AccessTokenExpireMinutes: 60,
 	}
 	repo := newMockUserRepo()
-	rdb := redis.NewClient(&config.Config{
-		RedisHost: "localhost",
-		RedisPort: 6379,
-		RedisDB:   15,
-	})
+	rdb := redis.NewInMemoryClient()
 
 	svc := NewService(repo, rdb, cfg)
 
@@ -218,30 +206,45 @@ func TestServiceLogout(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loginRes)
 
-	sessionKey := "session:" + userEmail
+	sessionKey := "session:" + userEmail + ":client-logout"
 	var sessionData models.SessionData
 	existsInRedis := rdb.GetJSON(context.Background(), sessionKey, &sessionData)
-	assert.True(t, existsInRedis, "La sesión debe existir en Redis tras el login")
+	assert.True(t, existsInRedis, "La sesión particionada por client_id debe existir en Redis tras el login")
 	assert.Equal(t, userEmail, sessionData.Email)
+	assert.Equal(t, "client-logout", sessionData.ClientID)
 
-	// 2. Ejecutar Logout exitoso -> Elimina la clave de Redis
+	claims, errClaims := security.ValidateToken(loginRes.Token, cfg.SecretKey)
+	require.NoError(t, errClaims)
+	require.NotEmpty(t, claims.RegisteredClaims.ID)
+
+	// 2. Ejecutar Logout exitoso -> Elimina la clave de sesión y registra jti en denylist
 	errLogout := svc.Logout(context.Background(), loginRes.Token, "client-logout")
 	assert.NoError(t, errLogout)
 
 	var sessionAfter models.SessionData
 	existsAfter := rdb.GetJSON(context.Background(), sessionKey, &sessionAfter)
 	assert.False(t, existsAfter, "La sesión ya no debe existir en Redis tras el logout")
+	assert.True(t, rdb.Exists(context.Background(), "revoked_jwt:"+claims.RegisteredClaims.ID), "El jti debe quedar registrado en la denylist de Redis tras el logout")
 
 	// 3. Idempotencia: Logout cuando la sesión ya no está en Redis -> Debe responder sin error
 	errLogoutAgain := svc.Logout(context.Background(), loginRes.Token, "client-logout")
 	assert.NoError(t, errLogoutAgain, "Logout debe ser idempotente si la sesión no está en Redis")
 
-	// 4. Client-ID mismatch (Token Binding) -> ErrTokenBindingMismatch
+	// 4. Sesiones simultáneas en múltiples clientes no se sobrescriben
+	loginClientB, err := svc.Login(context.Background(), &models.UserLoginRequest{
+		Email:    userEmail,
+		Password: "Password123",
+		ClientID: "client-mobile",
+	})
+	require.NoError(t, err)
+	assert.True(t, rdb.Exists(context.Background(), "session:"+userEmail+":client-mobile"))
+	assert.NotEmpty(t, loginClientB.Token)
+
+	// 5. Client-ID mismatch (Token Binding) -> ErrTokenBindingMismatch
 	errMismatch := svc.Logout(context.Background(), loginRes.Token, "different-client")
 	assert.ErrorIs(t, errMismatch, ErrTokenBindingMismatch)
 
-	// 5. Token inválido o malformado -> ErrInvalidCredentials
+	// 6. Token inválido o malformado -> ErrInvalidCredentials
 	errBadToken := svc.Logout(context.Background(), "invalid-token-string", "client-logout")
 	assert.ErrorIs(t, errBadToken, ErrInvalidCredentials)
 }
-

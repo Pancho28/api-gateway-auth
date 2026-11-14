@@ -43,6 +43,7 @@ func TestJWTTokenLifecycle(t *testing.T) {
 	claims, err := ValidateToken(token, secret)
 	require.NoError(t, err)
 	assert.Equal(t, userID, claims.ID)
+	assert.NotEmpty(t, claims.RegisteredClaims.ID, "jti debe generarse automáticamente para permitir revocación")
 	assert.Equal(t, email, claims.Subject)
 	assert.Equal(t, role, claims.Role)
 	assert.Equal(t, clientID, claims.ClientID)

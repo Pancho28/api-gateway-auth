@@ -81,8 +81,13 @@ func getLastProxyHeaders() http.Header {
 	return lastProxyHeaders.Clone()
 }
 
-// setupTestEnvironment inicializa un router Chi completo con mock DB y mock backend
+// setupTestEnvironment inicializa un router Chi completo con mock DB, mock Redis y mock backend
 func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *config.Config, *httptest.Server) {
+	router, mockDB, cfg, backend, _ := setupTestEnvironmentWithRedis(t)
+	return router, mockDB, cfg, backend
+}
+
+func setupTestEnvironmentWithRedis(t *testing.T) (http.Handler, *MockUserRepository, *config.Config, *httptest.Server, *redis.Client) {
 	// 1. Backend microservicio simulado
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setLastProxyHeaders(r.Header)
@@ -149,15 +154,10 @@ func setupTestEnvironment(t *testing.T) (http.Handler, *MockUserRepository, *con
 		Role:           "user",
 	}
 
-	rdb := redis.NewClient(&config.Config{
-		RedisHost: "localhost",
-		RedisPort: 6379,
-		RedisDB:   15,
-	})
-	_ = rdb.GetClient().FlushDB(context.Background()).Err()
+	rdb := redis.NewInMemoryClient()
 
 	router := api.SetupRouter(cfg, mockDB, rdb)
-	return router, mockDB, cfg, backend
+	return router, mockDB, cfg, backend, rdb
 }
 
 func TestHealthCheckEndpoint(t *testing.T) {
@@ -641,7 +641,7 @@ func TestPublicPathsProxying(t *testing.T) {
 }
 
 func TestAuthLogoutEndpoint(t *testing.T) {
-	router, _, _, backend := setupTestEnvironment(t)
+	router, _, _, backend, rdb := setupTestEnvironmentWithRedis(t)
 	defer backend.Close()
 
 	// 1. Petición a /auth/logout sin Authorization header -> 401 [E-08]
@@ -676,16 +676,27 @@ func TestAuthLogoutEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, tokenResp.Token)
 
-	// Verificar que la sesión efectivamente existe en Redis tras el login
-	rdb := redis.NewClient(&config.Config{
-		RedisHost: "localhost",
-		RedisPort: 6379,
-		RedisDB:   15,
-	})
-	sessionKey := "session:user@test.com"
+	// Verificar que la sesión efectivamente existe en Redis particionada por client_id tras el login
+	sessionKey := "session:user@test.com:test-client"
 	var sessionData models.SessionData
-	assert.True(t, rdb.GetJSON(context.Background(), sessionKey, &sessionData), "La sesión debe residir en Redis tras login")
+	assert.True(t, rdb.GetJSON(context.Background(), sessionKey, &sessionData), "La sesión particionada por client_id debe residir en Redis tras login")
 	assert.Equal(t, "user@test.com", sessionData.Email)
+	assert.Equal(t, "test-client", sessionData.ClientID)
+
+	// Login simultáneo en segundo cliente (admin-client) para validar aislamiento de sesiones
+	loginBody2, _ := json.Marshal(models.UserLoginRequest{
+		Email:    "user@test.com",
+		Password: "UserPass1",
+		ClientID: "admin-client",
+	})
+	reqLogin2 := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(loginBody2))
+	reqLogin2.Header.Set("Content-Type", "application/json")
+	recLogin2 := httptest.NewRecorder()
+	router.ServeHTTP(recLogin2, reqLogin2)
+	require.Equal(t, http.StatusOK, recLogin2.Code)
+
+	var tokenResp2 models.TokenResponse
+	require.NoError(t, json.Unmarshal(recLogin2.Body.Bytes(), &tokenResp2))
 
 	// 4. Intento de logout con Token Binding Mismatch (cliente diferente al token) -> 401 [E-02]
 	reqMismatch := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
@@ -709,7 +720,24 @@ func TestAuthLogoutEndpoint(t *testing.T) {
 	var sessionAfter models.SessionData
 	assert.False(t, rdb.GetJSON(context.Background(), sessionKey, &sessionAfter), "La sesión debe haber sido purgada de Redis")
 
-	// 6. Contrato idempotente: Si la sesión ya no está en Redis, igualmente responder 200 OK
+	// 6. Revocación estricta: el JWT recién cerrado NO debe volver a funcionar por Cache Miss en PostgreSQL -> 401 [E-08]
+	reqAfterLogout := httptest.NewRequest(http.MethodGet, "/shop/items", nil)
+	reqAfterLogout.Header.Set("Authorization", "Bearer "+tokenResp.Token)
+	reqAfterLogout.Header.Set("X-Client-Id", "test-client")
+	recAfterLogout := httptest.NewRecorder()
+	router.ServeHTTP(recAfterLogout, reqAfterLogout)
+	assert.Equal(t, http.StatusUnauthorized, recAfterLogout.Code, "Un JWT revocado mediante logout debe ser rechazado incluso si el usuario existe en PostgreSQL")
+	assert.Contains(t, recAfterLogout.Body.String(), "E-08")
+
+	// 7. La sesión del segundo cliente (admin-client) debe seguir activa
+	reqSecondClient := httptest.NewRequest(http.MethodGet, "/shop/items", nil)
+	reqSecondClient.Header.Set("Authorization", "Bearer "+tokenResp2.Token)
+	reqSecondClient.Header.Set("X-Client-Id", "admin-client")
+	recSecondClient := httptest.NewRecorder()
+	router.ServeHTTP(recSecondClient, reqSecondClient)
+	assert.Equal(t, http.StatusOK, recSecondClient.Code, "Cerrar sesión en un cliente no debe invalidar sesiones activas de otro client_id")
+
+	// 8. Contrato idempotente: Si la sesión ya no está en Redis, igualmente responder 200 OK
 	reqLogoutSecond := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
 	reqLogoutSecond.Header.Set("Authorization", "Bearer "+tokenResp.Token)
 	reqLogoutSecond.Header.Set("X-Client-Id", "test-client")
@@ -718,6 +746,3 @@ func TestAuthLogoutEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recLogoutSecond.Code, "Debe retornar 200 OK aunque la sesión ya no esté en Redis")
 	assert.Contains(t, recLogoutSecond.Body.String(), "Sesión finalizada exitosamente")
 }
-
-
-

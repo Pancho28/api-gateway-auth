@@ -97,6 +97,7 @@ MICROSERVICES='{
 | `public_paths` | No | Prefijos de sub-rutas públicas que no exigen JWT. |
 | `allow_anonymous` | No | Si es `true`, permite tráfico anónimo en todo el servicio. |
 | `passthrough_headers`| No | Lista blanca de cabeceras `X-*` del cliente que el Gateway permite reenviar al servicio. Toda otra cabecera `X-*` no estándar es purgada por seguridad. |
+| `timeout_seconds` | No | Timeout máximo en segundos para el proxy hacia este servicio (default `15`). |
 
 ---
 

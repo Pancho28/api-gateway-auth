@@ -41,7 +41,7 @@ sequenceDiagram
     GW->>GW: 3. Identifica microservicio destino y valida allowed_clients ([E-03])
     alt Ruta Protegida (No está en public_paths ni allow_anonymous)
         GW->>GW: 4. Valida firma JWT, exp y Token Binding (X-Client-Id == claim client_id) ([E-02], [E-08])
-        GW->>Redis: 5. Verifica sesión activa session:{email} (<0.5ms)
+        GW->>Redis: 5. Verifica denylist revoked_jwt:{jti} y sesión session:{email}:{client_id} (<0.5ms)
     end
     Note over GW: 6. Saneamiento Anti-Spoofing de Cabeceras:<br/>- Borra todas las X-* del cliente salvo X-Client-Id y passthrough_headers<br/>- Inyecta X-Internal-Api-Key, X-User-Id, X-User-Email, X-User-Role, X-Request-Id
     GW->>Upstream: 7. Streaming Zero-Copy hacia URL interna
@@ -66,6 +66,7 @@ El Gateway se configura dinámicamente mediante la variable de entorno JSON `MIC
 | `public_paths` | `[]string` | No | Lista de prefijos de sub-rutas accesibles sin token JWT (ej. `["/api/v1/marketplace"]`). |
 | `allow_anonymous` | `bool` | No | Si es `true`, todas las rutas del microservicio permiten acceso sin autenticación. |
 | `passthrough_headers` | `[]string` | No | **Lista blanca de cabeceras personalizadas (`X-*`)** que el Gateway permite pasar desde el cliente hacia este microservicio específico (ej. `["X-Restaurant-Id", "X-Timezone"]`). |
+| `timeout_seconds` | `int` | No | Timeout máximo de espera en segundos para peticiones hacia este microservicio (por defecto `15`s). |
 
 ### 3.2. Ejemplo Canónico de Configuración en `.env`
 ```json
@@ -135,11 +136,11 @@ El Gateway únicamente gestiona **dos roles globales**:
    - Si el cliente envía `"id"` (UUIDv4 válido), se persiste ese UUID; si se omite, el Gateway genera uno nuevo. Rol asignado siempre: `"user"`.
 2. **`POST /auth/login` (Inicio de Sesión):**
    - Requiere `X-Client-Id` (por header o en el body `client_id`, de lo contrario `400 [E-01]`).
-   - Emite un JWT con vigencia estricta de **60 minutos** (sin refresh token) y guarda la sesión en Redis (`session:{email}`) con TTL de 60 minutos.
+   - Emite un JWT con `jti` único (UUIDv4) y vigencia estricta de **60 minutos** (sin refresh token), guardando la sesión particionada por cliente en Redis (`session:{email}:{client_id}`) con TTL de 60 minutos.
 3. **`POST /auth/logout` (Cierre de Sesión / Invalidador de Redis):**
    - Cabecera obligatoria: `Authorization: Bearer <token>`, opcional `X-Client-Id` para validación de *Token Binding*.
-   - Invalida y elimina la clave `session:{email}` en Redis para liberar memoria de inmediato sin esperar al TTL de 60 minutos.
-   - **Contrato Idempotente:** Si la clave ya no se encuentra en Redis (por expiración previa o llamada repetida), responde igualmente con `200 OK` (`{"message": "Sesión finalizada exitosamente"}`) al cumplirse el estado deseado.
+   - Registra el `jti` del token en la denylist de Redis (`revoked_jwt:{jti}`) con TTL restante hasta la expiración del JWT (impidiendo su reutilización incluso ante *Cache Miss*) y elimina `session:{email}:{client_id}` (y `session:{email}` por compatibilidad).
+   - **Contrato Idempotente:** Si la sesión ya no se encuentra en Redis (por expiración previa o llamada repetida), responde igualmente con `200 OK` (`{"message": "Sesión finalizada exitosamente"}`) al cumplirse el estado deseado.
 4. **`POST /auth/admin/users` (Creación M2M para Backends):**
    - Protegido con `X-Gateway-Secret`. Permite a los backends crear usuarios con `UUIDv4` pre-generado (`role: "user"`).
 5. **`DELETE /auth/admin/users/:id` (Compensación / Rollback M2M):**
