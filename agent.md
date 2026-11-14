@@ -34,21 +34,28 @@ Este documento define las directrices obligatorias, arquitectura y flujo de trab
    - Todo script temporal de verificación o análisis debe crearse **exclusivamente dentro de la carpeta `debug/`** (ej. `debug/test_headers.go`, `debug/check_redis.go`), la cual está ignorada en `.gitignore`.
 3. **Cero Código Truncado:**
    - Prohibido entregar código con comentarios tipo `// ...resto del código...` o `// TODO`. Toda implementación debe ser completa y compilable.
+4. **Mantenimiento de `TODO.md` (Orden Cronológico Inverso / LIFO):**
+   - Toda nueva tarea pendiente, actualización o entrada en el histórico de `TODO.md` debe insertarse **arriba del todo** en su bloque correspondiente, manteniendo lo más reciente arriba y lo más antiguo abajo.
+5. **Planificación Previa Obligatoria en `PLAN.md` (Archivo Temporal de Contexto):**
+   - **Antes de realizar cualquier modificación en el código**, es obligatorio redactar el plan de cambios en el archivo `PLAN.md` en la raíz del proyecto (ignorado en `.gitignore`).
+   - `PLAN.md` es un **archivo temporal**: cada vez que se inicie un nuevo plan de mejora o corrección, **se debe borrar/sobrescribir por completo el plan anterior**, dejando únicamente el contexto técnico de los cambios actuales a ejecutar.
 
 ---
 
-## 4. Flujo de Trabajo Obligatorio: SDD + TDD
+## 4. Flujo de Trabajo Obligatorio: Planificación (`PLAN.md`) + SDD + TDD
 
-Todo desarrollo o refactorización sigue estrictamente el ciclo **Spec-Driven Development (SDD)** + **Test-Driven Development (TDD)**:
+Todo desarrollo o refactorización sigue estrictamente el ciclo **Planificación (`PLAN.md`)** + **Spec-Driven Development (SDD)** + **Test-Driven Development (TDD)**:
 
-1. **Paso 1 — Lectura de Especificación (SDD):**
+1. **Paso 0 — Redacción del Plan en `PLAN.md`:**
+   - Sobrescribir `PLAN.md` detallando el problema, diseño de solución, archivos afectados y plan de pruebas antes de tocar cualquier archivo `.go`.
+2. **Paso 1 — Lectura de Especificación (SDD):**
    - Consultar siempre `SPEC_API_GATEWAY_AUTH.md` antes de proponer cambios. Ningún contrato JSON, cabecera o código de error `[E-xx]` puede desviarse de la especificación.
-2. **Paso 2 — Fase Roja (TDD Red):**
+3. **Paso 2 — Fase Roja (TDD Red):**
    - Antes de tocar el código de producción, escribir o actualizar el test unitario en `internal/*/*_test.go` o de integración en `test/api_test.go` que verifique el nuevo requerimiento.
    - Ejecutar el paquete afectado (`go test -v ./internal/<paquete>/...`) y confirmar que la prueba falla.
-3. **Paso 3 — Fase Verde (TDD Green):**
+4. **Paso 3 — Fase Verde (TDD Green):**
    - Escribir el código mínimo, atómico e idiomático en Go (`gofmt`, manejo explícito de errores) para que la prueba pase.
-4. **Paso 4 — Fase Refactor y Validación Global:**
+5. **Paso 4 — Fase Refactor y Validación Global:**
    - Optimizar memoria y legibilidad manteniendo los tests en verde.
    - Validar toda la suite ejecutando `go test -v ./...`.
 

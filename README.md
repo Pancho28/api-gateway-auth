@@ -35,6 +35,7 @@ api-gateway-auth/
 ├── debug/                         # Directorio exclusivo para scripts temporales (ignorado en Git)
 ├── docs/adr/                      # Architecture Decision Records
 ├── SPEC_API_GATEWAY_AUTH.md       # Especificación Técnica Canónica (SDD)
+├── PLAN.md                        # Plan de ejecución activo (temporal, ignorado en Git)
 ├── TODO.md                        # Backlog centralizado y hoja de ruta pendiente
 ├── agent.md                       # Directivas operativas para Asistentes de IA
 └── docker-compose.yml             # PostgreSQL 16, PgBouncer, Redis 7 y Jaeger
