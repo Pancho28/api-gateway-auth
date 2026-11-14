@@ -11,6 +11,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// DefaultServiceTimeoutSeconds define el tiempo de espera por defecto hacia un microservicio aguas abajo
+const DefaultServiceTimeoutSeconds = 15
+
 // ServiceConfig define la URL, API Key y reglas de aislamiento de un microservicio aguas abajo
 type ServiceConfig struct {
 	URL                string   `json:"url"`
@@ -21,6 +24,15 @@ type ServiceConfig struct {
 	PublicPaths        []string `json:"public_paths,omitempty"`
 	AllowAnonymous     bool     `json:"allow_anonymous,omitempty"`
 	PassthroughHeaders []string `json:"passthrough_headers,omitempty"`
+	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`
+}
+
+// Timeout retorna la duración máxima configurada para el microservicio o el valor por defecto (15s)
+func (s ServiceConfig) Timeout() time.Duration {
+	if s.TimeoutSeconds <= 0 {
+		return time.Duration(DefaultServiceTimeoutSeconds) * time.Second
+	}
+	return time.Duration(s.TimeoutSeconds) * time.Second
 }
 
 // IsHeaderPassthroughAllowed verifica si una cabecera HTTP personalizada está en la lista blanca del microservicio
@@ -58,7 +70,6 @@ func (s *ServiceConfig) IsPathPublic(subPath string) bool {
 	}
 	return false
 }
-
 
 // IsClientAllowed verifica si un client_id tiene acceso según la lista blanca configurada
 func (s *ServiceConfig) IsClientAllowed(clientID string) bool {
@@ -108,6 +119,11 @@ type Config struct {
 	// CORS
 	Origin string
 
+	// Timeouts del servidor HTTP
+	HTTPReadTimeout  time.Duration
+	HTTPWriteTimeout time.Duration
+	HTTPIdleTimeout  time.Duration
+
 	// Redis
 	RedisHost     string
 	RedisPort     int
@@ -128,6 +144,41 @@ func (c *Config) DatabaseURL() string {
 // RedisURL genera la dirección de conexión para Redis
 func (c *Config) RedisAddr() string {
 	return fmt.Sprintf("%s:%d", c.RedisHost, c.RedisPort)
+}
+
+// AllowedOrigins parsea la variable ORIGIN (formato JSON Array o cadena simple) normalizando espacios y slashes finales
+func (c *Config) AllowedOrigins() []string {
+	raw := strings.TrimSpace(c.Origin)
+	if raw == "" {
+		return []string{"*"}
+	}
+
+	var candidates []string
+	if strings.HasPrefix(raw, "[") {
+		if err := json.Unmarshal([]byte(raw), &candidates); err != nil {
+			candidates = nil
+		}
+	}
+	if len(candidates) == 0 {
+		candidates = strings.Split(raw, ",")
+	}
+
+	origins := make([]string, 0, len(candidates))
+	for _, part := range candidates {
+		cleaned := strings.TrimRight(strings.TrimSpace(part), "/")
+		if cleaned == "" {
+			continue
+		}
+		if cleaned == "*" {
+			return []string{"*"}
+		}
+		origins = append(origins, cleaned)
+	}
+
+	if len(origins) == 0 {
+		return []string{"*"}
+	}
+	return origins
 }
 
 // Load lee las variables de entorno desde .env (si existe) y las variables del sistema
@@ -159,6 +210,10 @@ func Load() (*Config, error) {
 		PasswordAdmin: getEnv("PASSWORD_ADMIN", "Admin1234"),
 
 		Origin: getEnv("ORIGIN", ""),
+
+		HTTPReadTimeout:  time.Duration(getEnvInt("HTTP_READ_TIMEOUT", 15)) * time.Second,
+		HTTPWriteTimeout: time.Duration(getEnvInt("HTTP_WRITE_TIMEOUT", 60)) * time.Second,
+		HTTPIdleTimeout:  time.Duration(getEnvInt("HTTP_IDLE_TIMEOUT", 60)) * time.Second,
 
 		RedisHost:     getEnv("REDIS_HOST", "localhost"),
 		RedisPort:     getEnvInt("REDIS_PORT", 6379),

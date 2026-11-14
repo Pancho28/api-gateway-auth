@@ -35,6 +35,7 @@ api-gateway-auth/
 ├── debug/                         # Directorio exclusivo para scripts temporales (ignorado en Git)
 ├── docs/adr/                      # Architecture Decision Records
 ├── SPEC_API_GATEWAY_AUTH.md       # Especificación Técnica Canónica (SDD)
+├── PLAN.md                        # Plan de ejecución activo (temporal, ignorado en Git)
 ├── TODO.md                        # Backlog centralizado y hoja de ruta pendiente
 ├── agent.md                       # Directivas operativas para Asistentes de IA
 └── docker-compose.yml             # PostgreSQL 16, PgBouncer, Redis 7 y Jaeger
@@ -96,6 +97,7 @@ MICROSERVICES='{
 | `public_paths` | No | Prefijos de sub-rutas públicas que no exigen JWT. |
 | `allow_anonymous` | No | Si es `true`, permite tráfico anónimo en todo el servicio. |
 | `passthrough_headers`| No | Lista blanca de cabeceras `X-*` del cliente que el Gateway permite reenviar al servicio. Toda otra cabecera `X-*` no estándar es purgada por seguridad. |
+| `timeout_seconds` | No | Timeout máximo en segundos para el proxy hacia este servicio (default `15`). |
 
 ---
 

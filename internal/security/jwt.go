@@ -3,10 +3,12 @@ package security
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"api-gateway/internal/models"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var (
@@ -17,6 +19,7 @@ var (
 
 // TokenOptions define los parámetros para la emisión de un token JWT
 type TokenOptions struct {
+	JTI            string
 	UserID         string
 	Email          string
 	Role           string
@@ -37,8 +40,14 @@ func GenerateTokenWithOptions(opts TokenOptions) (string, error) {
 		aud = jwt.ClaimStrings{opts.ClientID}
 	}
 
+	jti := strings.TrimSpace(opts.JTI)
+	if jti == "" {
+		jti = uuid.New().String()
+	}
+
 	claims := models.JWTClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			Subject:   opts.Email,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(opts.ExpireDuration)),

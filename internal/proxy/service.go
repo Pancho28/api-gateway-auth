@@ -291,13 +291,17 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 		}
 	}
 
-	// 5. Ejecutar reenvío
+	// 5. Ejecutar reenvío con timeout configurable por microservicio
 	userDisplay := "anónimo"
 	if currentUser != nil {
 		userDisplay = currentUser.Email
 	}
-	log.Printf("[PROXY] [FORWARD] %s /%s -> %s | Cliente: '%s' | Usuario: '%s'", r.Method, rawPath, targetURL.String(), clientID, userDisplay)
-	proxy.ServeHTTP(w, r)
+	serviceTimeout := serviceConfig.Timeout()
+	log.Printf("[PROXY] [FORWARD] %s /%s -> %s | Cliente: '%s' | Usuario: '%s' | Timeout: %s", r.Method, rawPath, targetURL.String(), clientID, userDisplay, serviceTimeout)
+
+	proxyCtx, cancel := context.WithTimeout(r.Context(), serviceTimeout)
+	defer cancel()
+	proxy.ServeHTTP(w, r.WithContext(proxyCtx))
 }
 
 func (s *Service) sanitizePath(path string) (prefix, subPath string, err error) {

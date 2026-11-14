@@ -32,6 +32,7 @@ Thumbs.db
 *.log
 tmp/
 temp/
+PLAN.md
 
 # Cachés históricas
 __pycache__/

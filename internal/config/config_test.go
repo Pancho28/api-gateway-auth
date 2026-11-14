@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -145,4 +146,58 @@ func TestServiceConfigCaseInsensitiveRoles(t *testing.T) {
 	assert.False(t, svcUpper.IsRoleAllowed("user"))
 }
 
+func TestConfigHTTPTimeoutsAndAllowedOrigins(t *testing.T) {
+	// 1. Valores por defecto de timeouts
+	os.Unsetenv("HTTP_READ_TIMEOUT")
+	os.Unsetenv("HTTP_WRITE_TIMEOUT")
+	os.Unsetenv("HTTP_IDLE_TIMEOUT")
+	os.Unsetenv("ORIGIN")
 
+	cfgDefault, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Second, cfgDefault.HTTPReadTimeout)
+	assert.Equal(t, 60*time.Second, cfgDefault.HTTPWriteTimeout)
+	assert.Equal(t, 60*time.Second, cfgDefault.HTTPIdleTimeout)
+	assert.Equal(t, []string{"*"}, cfgDefault.AllowedOrigins())
+
+	// 2. Sobreescritura mediante variables de entorno (ORIGIN en formato JSON Array)
+	os.Setenv("HTTP_READ_TIMEOUT", "25")
+	os.Setenv("HTTP_WRITE_TIMEOUT", "120")
+	os.Setenv("HTTP_IDLE_TIMEOUT", "90")
+	os.Setenv("ORIGIN", `["https://app1.com/", "https://app2.com", ""]`)
+	defer func() {
+		os.Unsetenv("HTTP_READ_TIMEOUT")
+		os.Unsetenv("HTTP_WRITE_TIMEOUT")
+		os.Unsetenv("HTTP_IDLE_TIMEOUT")
+		os.Unsetenv("ORIGIN")
+	}()
+
+	cfgCustom, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 25*time.Second, cfgCustom.HTTPReadTimeout)
+	assert.Equal(t, 120*time.Second, cfgCustom.HTTPWriteTimeout)
+	assert.Equal(t, 90*time.Second, cfgCustom.HTTPIdleTimeout)
+	assert.Equal(t, []string{"https://app1.com", "https://app2.com"}, cfgCustom.AllowedOrigins())
+}
+
+func TestServiceConfigTimeout(t *testing.T) {
+	// 1. Sin timeout_seconds configurado -> Default 15s
+	defaultSvc := ServiceConfig{URL: "http://localhost:4000"}
+	assert.Equal(t, 15*time.Second, defaultSvc.Timeout())
+
+	// 2. Valor negativo o cero -> Fallback seguro a 15s
+	zeroSvc := ServiceConfig{URL: "http://localhost:4000", TimeoutSeconds: -5}
+	assert.Equal(t, 15*time.Second, zeroSvc.Timeout())
+
+	// 3. Parseo desde JSON MICROSERVICES con timeout_seconds personalizado
+	os.Setenv("MICROSERVICES", `{
+		"reservas": {"url": "http://localhost:4000", "allowed_clients": ["*"]},
+		"asistente-citas": {"url": "http://localhost:8005", "allowed_clients": ["*"], "timeout_seconds": 60}
+	}`)
+	defer os.Unsetenv("MICROSERVICES")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Second, cfg.Microservices["reservas"].Timeout())
+	assert.Equal(t, 60*time.Second, cfg.Microservices["asistente-citas"].Timeout())
+}

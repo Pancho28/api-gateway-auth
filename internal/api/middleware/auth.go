@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -97,9 +96,15 @@ func (m *AuthMiddleware) resolveUserFromAuthHeader(ctx context.Context, authHead
 
 	email := claims.Subject
 
-	// 1. Validación de sesión en Redis (ultra-baja latencia sin tocar PostgreSQL)
+	// 0. Verificación de revocación estricta por jti (Denylist en Redis)
+	if claims.RegisteredClaims.ID != "" && m.redis.Exists(ctx, redis.RevokedJWTKey(claims.RegisteredClaims.ID)) {
+		log.Printf("[AUTH] [TOKEN_REVOKED] Token revocado previamente (jti=%s) | Usuario: '%s'", claims.RegisteredClaims.ID, email)
+		return nil, http.StatusUnauthorized, `{"detail":"No se pudieron validar las credenciales [E-08]"}`
+	}
+
+	// 1. Validación de sesión en Redis particionada por client_id (ultra-baja latencia sin tocar PostgreSQL)
 	var session models.SessionData
-	sessionKey := fmt.Sprintf("session:%s", email)
+	sessionKey := redis.SessionKey(email, claims.ClientID)
 	if m.redis.GetJSON(ctx, sessionKey, &session) && session.Email != "" {
 		currentUser := &models.User{
 			ID:       session.ID,

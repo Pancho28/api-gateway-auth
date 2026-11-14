@@ -21,7 +21,6 @@ var (
 	ErrTokenBindingMismatch = errors.New("contexto de seguridad inconsistente")
 )
 
-
 type Service struct {
 	db    database.UserRepository
 	redis *redis.Client
@@ -53,15 +52,7 @@ func (s *Service) Login(ctx context.Context, req *models.UserLoginRequest) (*mod
 		return nil, fmt.Errorf("error al generar token de acceso: %w", err)
 	}
 
-	// Almacenar sesión en Redis con TTL igual a la expiración del JWT (ADR-002)
-	sessionKey := fmt.Sprintf("session:%s", user.Email)
-	sessionData := models.SessionData{
-		ID:       user.ID,
-		Email:    user.Email,
-		Role:     user.Role,
-		ClientID: req.ClientID,
-	}
-	s.redis.SetJSON(ctx, sessionKey, sessionData, expireDuration)
+	s.cacheSession(ctx, user, req.ClientID, expireDuration)
 
 	return &models.TokenResponse{
 		ID:       user.ID,
@@ -114,15 +105,7 @@ func (s *Service) Register(ctx context.Context, req *models.UserRegisterRequest)
 		return nil, fmt.Errorf("error al generar token de acceso: %w", err)
 	}
 
-	// Almacenar sesión en Redis con TTL igual a la expiración del JWT
-	sessionKey := fmt.Sprintf("session:%s", newUser.Email)
-	sessionData := models.SessionData{
-		ID:       newUser.ID,
-		Email:    newUser.Email,
-		Role:     newUser.Role,
-		ClientID: req.ClientID,
-	}
-	s.redis.SetJSON(ctx, sessionKey, sessionData, expireDuration)
+	s.cacheSession(ctx, newUser, req.ClientID, expireDuration)
 
 	return &models.TokenResponse{
 		ID:       newUser.ID,
@@ -133,7 +116,7 @@ func (s *Service) Register(ctx context.Context, req *models.UserRegisterRequest)
 	}, nil
 }
 
-// Logout invalida la sesión del usuario eliminando su registro de Redis
+// Logout invalida la sesión del usuario en Redis y registra el jti del JWT en la denylist
 func (s *Service) Logout(ctx context.Context, tokenStr, reqClientID string) error {
 	claims, err := security.ValidateToken(tokenStr, s.cfg.SecretKey)
 	if err != nil {
@@ -145,9 +128,28 @@ func (s *Service) Logout(ctx context.Context, tokenStr, reqClientID string) erro
 		return ErrTokenBindingMismatch
 	}
 
-	sessionKey := fmt.Sprintf("session:%s", claims.Subject)
-	s.redis.Delete(ctx, sessionKey)
+	if claims.RegisteredClaims.ID != "" && claims.ExpiresAt != nil {
+		remainingTTL := time.Until(claims.ExpiresAt.Time)
+		if remainingTTL > 0 {
+			s.redis.SetString(ctx, redis.RevokedJWTKey(claims.RegisteredClaims.ID), "1", remainingTTL)
+		}
+	}
+
+	s.redis.Delete(ctx, redis.SessionKey(claims.Subject, claims.ClientID))
+	if claims.ClientID != "" {
+		// Limpieza defensiva por compatibilidad con claves heredadas sin client_id
+		s.redis.Delete(ctx, redis.SessionKey(claims.Subject, ""))
+	}
 	return nil
 }
 
-
+func (s *Service) cacheSession(ctx context.Context, user *models.User, clientID string, ttl time.Duration) {
+	sessionKey := redis.SessionKey(user.Email, clientID)
+	sessionData := models.SessionData{
+		ID:       user.ID,
+		Email:    user.Email,
+		Role:     user.Role,
+		ClientID: clientID,
+	}
+	s.redis.SetJSON(ctx, sessionKey, sessionData, ttl)
+}

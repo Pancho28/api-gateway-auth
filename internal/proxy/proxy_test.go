@@ -354,3 +354,54 @@ func TestProxyServiceAntiSpoofingAndPassthroughHeaders(t *testing.T) {
 		assert.Equal(t, "rest-123Injected-Header: evil", got)
 	})
 }
+
+func TestProxyServicePerServiceTimeout(t *testing.T) {
+	slowBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(1500 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case <-r.Context().Done():
+			return
+		}
+	}))
+	defer slowBackend.Close()
+
+	cfg := &config.Config{
+		RedisCacheTTL: 60 * time.Second,
+		Microservices: map[string]config.ServiceConfig{
+			"fast-svc": {
+				URL:            slowBackend.URL,
+				AllowedClients: []string{"*"},
+				TimeoutSeconds: 1,
+			},
+			"slow-svc": {
+				URL:            slowBackend.URL,
+				AllowedClients: []string{"*"},
+				TimeoutSeconds: 5,
+			},
+		},
+	}
+
+	svc := NewService(cfg, redis.NewInMemoryClient())
+	user := &models.User{
+		ID:       "user-1",
+		Email:    "user@test.com",
+		Role:     "user",
+		ClientID: "web",
+	}
+
+	// 1. Microservicio con timeout de 1s y respuesta de 1.5s -> 502 [E-05]
+	reqFast := httptest.NewRequest(http.MethodPost, "/fast-svc/chat", nil)
+	recFast := httptest.NewRecorder()
+	svc.ForwardRequest(recFast, reqFast, "fast-svc/chat", user)
+	assert.Equal(t, http.StatusBadGateway, recFast.Code)
+	assert.Contains(t, recFast.Body.String(), "E-05")
+
+	// 2. Microservicio con timeout de 5s y respuesta de 1.5s -> 200 OK
+	reqSlow := httptest.NewRequest(http.MethodPost, "/slow-svc/chat", nil)
+	recSlow := httptest.NewRecorder()
+	svc.ForwardRequest(recSlow, reqSlow, "slow-svc/chat", user)
+	assert.Equal(t, http.StatusOK, recSlow.Code)
+	assert.Contains(t, recSlow.Body.String(), `"ok":true`)
+}
