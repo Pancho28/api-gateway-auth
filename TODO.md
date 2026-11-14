@@ -7,7 +7,7 @@ Este documento consolida el backlog técnico, tareas pendientes, pruebas y despl
 
 ---
 
-## 🚀 Pendientes Activos & Mejoras Detectadas *(Actualizado: 2026-11-13)*
+## 🚀 Pendientes Activos & Mejoras Detectadas *(Actualizado: 2026-11-14)*
 
 - [ ] **Configuración Cloud-Native y Validación Fail-Fast al Arranque**:
   - Soportar `DB_SSLMODE` configurable en `internal/config/config.go` (actualmente fijo en `?sslmode=disable`) y parseo opcional de `DATABASE_URL` / `REDIS_URL`.
@@ -15,19 +15,6 @@ Este documento consolida el backlog técnico, tareas pendientes, pruebas y despl
 - [ ] **Validación de `allowed_audiences` y Readiness Check (`/health`)**:
   - Evaluar `ServiceConfig.AllowedAudiences` dentro de `internal/proxy/service.go` (actualmente declarado en `internal/config/config.go` pero sin enforcement en el proxy).
   - Revisar el límite `PerMinute(5)` en `GET /health` (`internal/api/router.go`) y/o separar un endpoint de *readiness* con chequeo real de PostgreSQL y Redis para monitores externos en producción.
-
----
-
-## ☁️ Despliegue & Validación en Railway
-
-- [ ] **Despliegue del Binario en Railway**:
-  - Configurar servicio en Railway apuntando al `Dockerfile` optimizado en la raíz del repositorio.
-  - Vincular variables de entorno de producción (`MICROSERVICES`, `SECRET_KEY`, `GATEWAY_SECRET`, `EMAIL_ADMIN`, `PASSWORD_ADMIN`, `ORIGIN`, etc.).
-  - Conectar a las instancias gestionadas de PostgreSQL 16 y Redis 7 mediante *Reference Variables* (`${{postgres gateway.PGHOST}}`, `${{redis gateway.REDISHOST}}`, etc.).
-  - Verificar en el panel de métricas de Railway:
-    - Huella de memoria RAM en reposo (~18 MB).
-    - Latencia de respuesta en edge (<1 ms).
-    - Reducción efectiva en costes de facturación por uso de recursos.
 
 ---
 
@@ -89,10 +76,11 @@ Este documento consolida el backlog técnico, tareas pendientes, pruebas y despl
 
 ## ✅ Histórico de Tareas Completadas *(Más reciente arriba)*
 
+- [x] **Despliegue en Producción en Railway (`api-gateway-auth` + Bot Telegram `asistente-citas`)** *(Cerrado: 2026-11-14)*: Servicio desplegado y validado en Railway mediante `Dockerfile`, conectado a PostgreSQL y Redis gestionados con variables de entorno de producción (`MICROSERVICES`, `ORIGIN`, timeouts HTTP y secretos), operando correctamente junto al microservicio `asistente-citas`.
 - [x] **Timeouts Configurables por Microservicio (`timeout_seconds`)** *(Cerrado: 2026-11-13)*: Soporte de `timeout_seconds` opcional en `ServiceConfig` (`internal/config/config.go`, default `15s`) aplicado mediante `context.WithTimeout` por petición en `internal/proxy/service.go`, permitiendo extender tiempos de espera en servicios con IA como `asistente-citas`.
 - [x] **Revocación Estricta de JWT (`jti` Denylist) y Sesiones Multi-Cliente** *(Cerrado: 2026-11-13)*: Generación automática de `jti` UUIDv4 en `internal/security/jwt.go`, denylist `revoked_jwt:{jti}` en Redis al hacer `POST /auth/logout` (impidiendo reactivación por *Cache Miss* en PostgreSQL) y particionamiento de sesión por cliente `session:{email}:{client_id}`, junto con cliente Redis en memoria para pruebas aisladas.
 - [x] **Timeouts HTTP Configurables** *(Cerrado: 2026-11-13)*: Parametrización de `HTTP_READ_TIMEOUT` (15s), `HTTP_WRITE_TIMEOUT` (60s) y `HTTP_IDLE_TIMEOUT` (60s) en `internal/config/config.go` y `cmd/gateway/main.go`.
-- [x] **Soporte Multi-Origen en CORS (`ORIGIN`)** *(Cerrado: 2026-11-13)*: Parseo de múltiples orígenes separados por coma con normalización en `Config.AllowedOrigins()` y desactivación de `AllowCredentials` en modo wildcard `*`, cubierto con tests en `internal/api/middleware/cors_test.go`.
+- [x] **Soporte Multi-Origen en CORS (`ORIGIN`)** *(Cerrado: 2026-11-13)*: Parseo de múltiples orígenes en formato JSON Array (`["...","..."]`) y retrocompatibilidad con cadenas separadas por coma con normalización en `Config.AllowedOrigins()`, más desactivación de `AllowCredentials` en modo wildcard `*`, cubierto con tests en `internal/api/middleware/cors_test.go`.
 - [x] **Revocación Activa de Sesión (`POST /auth/logout`)** *(Cerrado: 2026-10-29)*: Endpoint autenticado que invalida y purga atómicamente `session:{email}` en Redis para liberar memoria RAM de inmediato sin esperar al TTL de 60 minutos, bajo contrato idempotente (retorna `200 OK` incluso si la sesión ya no existe en Redis).
 - [x] **Suite de Pruebas de Integración** *(Cerrado: 2026-10-27)*: Pruebas perimetrales en `test/api_test.go` y paquetes internos ejecutándose al 100% en verde.
 - [x] **Saneamiento Anti-Spoofing y `passthrough_headers`** *(Cerrado: 2026-10-26)*: Purga de cabeceras `X-*` no autorizadas con lista blanca configurable por servicio, sanitización contra inyecciones CRLF y blindaje inmutable de cabeceras reservadas del Gateway (`X-User-Id`, `X-User-Email`, `X-User-Role`, `X-Internal-Api-Key`, `X-Request-Id`).
