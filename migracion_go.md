@@ -277,7 +277,7 @@ Tras finalizar la migración y validar el 100% de las pruebas, el proyecto en Py
   * `Dockerfile`: Multi-stage build optimizado para Railway (<20 MB).
   * `docker-compose.yml`: Infraestructura (Postgres 16, PgBouncer, Redis 7).
   * `go.mod` y `go.sum`: Módulos de Go.
-  * `README.md`, `agent.md`, `SPEC_API_GATEWAY_AUTH.md`, `migracion_go.md`.
+  * `README.md`, `AGENTS.md`, `SPEC_API_GATEWAY_AUTH.md`, `migracion_go.md`.
   * `docs/adr/`: Registros de decisión arquitectónica (ADR-001 y ADR-002).
 
 ---

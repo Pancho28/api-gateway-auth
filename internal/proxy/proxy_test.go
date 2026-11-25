@@ -22,9 +22,10 @@ func setupTestProxy(t *testing.T, targetHandler http.HandlerFunc) (*Service, *ht
 		RedisCacheTTL: 60 * time.Second,
 		Microservices: map[string]config.ServiceConfig{
 			"orders": {
-				URL:            backend.URL,
-				APIKey:         "secret-internal-key-123",
-				AllowedClients: []string{"client-app", "admin-portal"},
+				URL:             backend.URL,
+				APIKey:          "secret-internal-key-123",
+				AllowedClients:  []string{"client-app", "admin-portal"},
+				CacheTTLSeconds: 60,
 			},
 			"unconfigured": {
 				URL:    backend.URL,
@@ -404,4 +405,131 @@ func TestProxyServicePerServiceTimeout(t *testing.T) {
 	svc.ForwardRequest(recSlow, reqSlow, "slow-svc/chat", user)
 	assert.Equal(t, http.StatusOK, recSlow.Code)
 	assert.Contains(t, recSlow.Body.String(), `"ok":true`)
+}
+
+func TestProxyServiceOptInCacheAndPassthroughHeadersKey(t *testing.T) {
+	callCount := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		restID := r.Header.Get("X-Restaurant-Id")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"restaurant":"` + restID + `","calls":` + strings.TrimSpace(string(rune('0'+callCount))) + `}`))
+	}))
+	defer backend.Close()
+
+	cfg := &config.Config{
+		RedisCacheTTL: 60 * time.Second,
+		Microservices: map[string]config.ServiceConfig{
+			"reservas-nocache": {
+				URL:            backend.URL,
+				AllowedClients: []string{"reservasmanager"},
+				// CacheTTLSeconds omitido -> 0 (desactivado por defecto)
+			},
+			"reservas-cached": {
+				URL:                backend.URL,
+				AllowedClients:     []string{"reservasmanager"},
+				PassthroughHeaders: []string{"X-Restaurant-Id"},
+				CacheTTLSeconds:    60,
+			},
+		},
+	}
+
+	svc := NewService(cfg, redis.NewInMemoryClient())
+	user := &models.User{
+		ID:       "user-1",
+		Email:    "staff@test.com",
+		Role:     "user",
+		ClientID: "reservasmanager",
+	}
+
+	// 1. Con CacheTTLSeconds = 0 (default), dos GET seguidos deben ir siempre al backend
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/reservas-nocache/api/v1/floor", nil)
+		rec := httptest.NewRecorder()
+		svc.ForwardRequest(rec, req, "reservas-nocache/api/v1/floor", user)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Empty(t, rec.Header().Get("X-Cache"))
+	}
+	assert.Equal(t, 2, callCount, "Sin cache_ttl_seconds > 0, no debe cachear GET")
+
+	// 2. Con CacheTTLSeconds = 60 y PassthroughHeaders, la clave separa por X-Restaurant-Id
+	reqA1 := httptest.NewRequest(http.MethodGet, "/reservas-cached/api/v1/floor", nil)
+	reqA1.Header.Set("X-Restaurant-Id", "rest-A")
+	recA1 := httptest.NewRecorder()
+	svc.ForwardRequest(recA1, reqA1, "reservas-cached/api/v1/floor", user)
+	assert.Equal(t, "MISS", recA1.Header().Get("X-Cache"))
+	assert.Contains(t, recA1.Body.String(), `"restaurant":"rest-A"`)
+
+	// Esperar brevemente a la goroutine que escribe en Redis en memoria
+	time.Sleep(30 * time.Millisecond)
+
+	// Petición para rest-B NO debe recibir la respuesta cacheada de rest-A
+	reqB1 := httptest.NewRequest(http.MethodGet, "/reservas-cached/api/v1/floor", nil)
+	reqB1.Header.Set("X-Restaurant-Id", "rest-B")
+	recB1 := httptest.NewRecorder()
+	svc.ForwardRequest(recB1, reqB1, "reservas-cached/api/v1/floor", user)
+	assert.Equal(t, "MISS", recB1.Header().Get("X-Cache"))
+	assert.Contains(t, recB1.Body.String(), `"restaurant":"rest-B"`)
+	assert.Equal(t, 4, callCount)
+
+	// Segunda petición para rest-A sí debe ser HIT devolviendo rest-A
+	reqA2 := httptest.NewRequest(http.MethodGet, "/reservas-cached/api/v1/floor", nil)
+	reqA2.Header.Set("X-Restaurant-Id", "rest-A")
+	recA2 := httptest.NewRecorder()
+	svc.ForwardRequest(recA2, reqA2, "reservas-cached/api/v1/floor", user)
+	assert.Equal(t, "HIT", recA2.Header().Get("X-Cache"))
+	assert.Contains(t, recA2.Body.String(), `"restaurant":"rest-A"`)
+	assert.Equal(t, 4, callCount, "HIT de rest-A no debe invocar al backend")
+}
+
+func TestProxyServicePublicPathsByMethodAndExactMatch(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	cfg := &config.Config{
+		Microservices: map[string]config.ServiceConfig{
+			"reservas": {
+				URL:            backend.URL,
+				AllowedClients: []string{"reservasmanager"},
+				PublicPaths: []string{
+					"POST /api/v1/reservations",
+					"GET /api/v1/restaurants$",
+				},
+			},
+		},
+	}
+
+	svc := NewService(cfg, redis.NewInMemoryClient())
+
+	// POST público sin sesión -> 200 OK
+	reqPost := httptest.NewRequest(http.MethodPost, "/reservas/api/v1/reservations", nil)
+	reqPost.Header.Set("X-Client-Id", "reservasmanager")
+	recPost := httptest.NewRecorder()
+	svc.ForwardRequest(recPost, reqPost, "reservas/api/v1/reservations", nil)
+	assert.Equal(t, http.StatusOK, recPost.Code)
+
+	// GET /reservations/my sin sesión -> 401 [E-08]
+	reqMy := httptest.NewRequest(http.MethodGet, "/reservas/api/v1/reservations/my", nil)
+	reqMy.Header.Set("X-Client-Id", "reservasmanager")
+	recMy := httptest.NewRecorder()
+	svc.ForwardRequest(recMy, reqMy, "reservas/api/v1/reservations/my", nil)
+	assert.Equal(t, http.StatusUnauthorized, recMy.Code)
+
+	// GET /restaurants exacto sin sesión -> 200 OK
+	reqRest := httptest.NewRequest(http.MethodGet, "/reservas/api/v1/restaurants", nil)
+	reqRest.Header.Set("X-Client-Id", "reservasmanager")
+	recRest := httptest.NewRecorder()
+	svc.ForwardRequest(recRest, reqRest, "reservas/api/v1/restaurants", nil)
+	assert.Equal(t, http.StatusOK, recRest.Code)
+
+	// GET /restaurants/admin sin sesión -> 401 [E-08]
+	reqAdmin := httptest.NewRequest(http.MethodGet, "/reservas/api/v1/restaurants/admin", nil)
+	reqAdmin.Header.Set("X-Client-Id", "reservasmanager")
+	recAdmin := httptest.NewRecorder()
+	svc.ForwardRequest(recAdmin, reqAdmin, "reservas/api/v1/restaurants/admin", nil)
+	assert.Equal(t, http.StatusUnauthorized, recAdmin.Code)
 }

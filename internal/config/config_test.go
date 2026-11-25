@@ -201,3 +201,57 @@ func TestServiceConfigTimeout(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.Microservices["reservas"].Timeout())
 	assert.Equal(t, 60*time.Second, cfg.Microservices["asistente-citas"].Timeout())
 }
+
+func TestServiceConfigPublicPathsGranularAndCacheAndRateLimit(t *testing.T) {
+	// 1. Reglas granulares en public_paths (método HTTP opcional y coincidencia exacta con $)
+	svc := ServiceConfig{
+		URL:            "http://localhost:4000",
+		AllowedClients: []string{"reservasmanager"},
+		PublicPaths: []string{
+			"/api/v1/marketplace",
+			"POST /api/v1/reservations",
+			"/api/v1/reservations/manage",
+			"GET /api/v1/restaurants$",
+		},
+	}
+
+	assert.True(t, svc.IsRequestPublic("GET", "api/v1/marketplace/cities"))
+	assert.True(t, svc.IsRequestPublic("POST", "api/v1/reservations"))
+	assert.False(t, svc.IsRequestPublic("GET", "api/v1/reservations/my"))
+	assert.False(t, svc.IsRequestPublic("GET", "api/v1/reservations/restaurant"))
+	assert.False(t, svc.IsRequestPublic("PATCH", "api/v1/reservations/123/status"))
+	assert.True(t, svc.IsRequestPublic("GET", "api/v1/reservations/manage/tok_123"))
+	assert.True(t, svc.IsRequestPublic("PATCH", "api/v1/reservations/manage/tok_123/cancel"))
+	assert.True(t, svc.IsRequestPublic("GET", "api/v1/restaurants"))
+	assert.False(t, svc.IsRequestPublic("GET", "api/v1/restaurants/admin"))
+	assert.False(t, svc.IsRequestPublic("GET", "api/v1/restaurants/me"))
+	assert.False(t, svc.IsRequestPublic("POST", "api/v1/restaurants"))
+
+	// 2. CacheTTL opt-in (default 0s = desactivado)
+	assert.Equal(t, time.Duration(0), svc.CacheTTL())
+	cachedSvc := ServiceConfig{URL: "http://localhost:4000", CacheTTLSeconds: 45}
+	assert.Equal(t, 45*time.Second, cachedSvc.CacheTTL())
+
+	// 3. ProxyRateLimitPerMinute (default 300 y configurable por env)
+	var nilCfg *Config
+	assert.Equal(t, 300, nilCfg.ProxyRateLimitPerMinute())
+	emptyCfg := &Config{}
+	assert.Equal(t, 300, emptyCfg.ProxyRateLimitPerMinute())
+
+	os.Unsetenv("RATE_LIMIT_PROXY_PER_MINUTE")
+	cfgDefault, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 300, cfgDefault.ProxyRateLimitPerMinute())
+
+	os.Setenv("RATE_LIMIT_PROXY_PER_MINUTE", "450")
+	os.Setenv("MICROSERVICES", `{"reservas":{"url":"http://localhost:4000","allowed_clients":["*"],"cache_ttl_seconds":30}}`)
+	defer func() {
+		os.Unsetenv("RATE_LIMIT_PROXY_PER_MINUTE")
+		os.Unsetenv("MICROSERVICES")
+	}()
+
+	cfgCustom, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 450, cfgCustom.ProxyRateLimitPerMinute())
+	assert.Equal(t, 30*time.Second, cfgCustom.Microservices["reservas"].CacheTTL())
+}

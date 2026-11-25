@@ -37,7 +37,7 @@ api-gateway-auth/
 ├── SPEC_API_GATEWAY_AUTH.md       # Especificación Técnica Canónica (SDD)
 ├── PLAN.md                        # Plan de ejecución activo (temporal, ignorado en Git)
 ├── TODO.md                        # Backlog centralizado y hoja de ruta pendiente
-├── agent.md                       # Directivas operativas para Asistentes de IA
+├── AGENTS.md                      # Directivas operativas para Asistentes de IA
 └── docker-compose.yml             # PostgreSQL 16, PgBouncer, Redis 7 y Jaeger
 ```
 
@@ -70,20 +70,18 @@ MICROSERVICES='{
     "reservas": {
         "url": "http://localhost:4000",
         "api_key": "secret-key-reservas-123",
-        "allowed_clients": ["reservas-web", "hostess-pwa"],
-        "public_paths": ["/api/v1/marketplace", "/api/v1/auth/register", "/api/v1/reservations", "/api/v1/reviews"],
-        "passthrough_headers": ["X-Restaurant-Id", "X-Timezone"]
+        "allowed_clients": ["reservasmanager", "reservas-web", "hostess-pwa"],
+        "public_paths": ["/api/v1/marketplace", "/api/v1/auth/register", "POST /api/v1/reservations", "/api/v1/reservations/manage", "POST /api/v1/reviews", "GET /api/v1/restaurants$"],
+        "passthrough_headers": ["X-Restaurant-Id", "X-Timezone"],
+        "cache_ttl_seconds": 0
     },
-    "ventas": {
-        "url": "http://localhost:8001",
-        "api_key": "secret-key-ventas-123",
-        "allowed_clients": ["comensales-app", "staff-pos", "admin-portal"]
-    },
-    "stock": {
-        "url": "http://localhost:8002",
-        "api_key": "secret-key-stock-456",
-        "allowed_clients": ["staff-pos", "admin-portal"],
-        "required_roles": ["user", "admin"]
+    "asistente-citas": {
+        "url": "http://localhost:8005",
+        "api_key": "clave_secreta_compartida_con_el_gateway",
+        "allowed_clients": ["*"],
+        "public_paths": ["/api/v1/webhook"],
+        "passthrough_headers": ["X-Telegram-Bot-Api-Secret-Token", "X-Hub-Signature-256"],
+        "timeout_seconds": 60
     }
 }'
 ```
@@ -94,10 +92,11 @@ MICROSERVICES='{
 | `api_key` | No | Secreto inyectado en `X-Internal-Api-Key`. |
 | `allowed_clients` | **Sí** | Lista de `client_id` autorizados (o `["*"]`). Si se omite, bloquea con `403 [E-03]`. |
 | `required_roles` | No | Roles del Gateway permitidos (`"user"`, `"admin"`). |
-| `public_paths` | No | Prefijos de sub-rutas públicas que no exigen JWT. |
+| `public_paths` | No | Reglas de sub-rutas públicas sin JWT (prefijo, método HTTP opcional ej. `"POST /ruta"` o ruta exacta con `$` ej. `"GET /ruta$"`). |
 | `allow_anonymous` | No | Si es `true`, permite tráfico anónimo en todo el servicio. |
 | `passthrough_headers`| No | Lista blanca de cabeceras `X-*` del cliente que el Gateway permite reenviar al servicio. Toda otra cabecera `X-*` no estándar es purgada por seguridad. |
 | `timeout_seconds` | No | Timeout máximo en segundos para el proxy hacia este servicio (default `15`). |
+| `cache_ttl_seconds` | No | TTL en segundos del caché `GET` en Redis para este servicio (default `0` = desactivado; cuando `> 0`, incluye `passthrough_headers` en la clave). |
 
 ---
 
