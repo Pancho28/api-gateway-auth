@@ -83,7 +83,7 @@ func SetupRouter(
 	// Se registra al final para capturar todo el tráfico hacia los microservicios
 	r.Group(func(proxied chi.Router) {
 		proxied.Use(authMiddleware.AuthenticateOptional)
-		proxied.Use(rateLimiter.Limit(redis_rate.PerMinute(20)))
+		proxied.Use(rateLimiter.Limit(redis_rate.PerMinute(cfg.ProxyRateLimitPerMinute())))
 
 		proxied.HandleFunc("/*", gatewayHandler.ReverseProxy)
 	})

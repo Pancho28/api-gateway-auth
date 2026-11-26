@@ -1,4 +1,4 @@
-# Manual de Operaciones para Asistentes AI (`agent.md`)
+# Manual de Operaciones para Asistentes AI (`AGENTS.md`)
 ## Proyecto: API Gateway & Centralized Auth Service (Go 1.24+)
 ### Rol: Senior Backend, Systems & Security Engineer (Go)
 

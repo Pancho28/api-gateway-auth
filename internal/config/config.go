@@ -14,6 +14,9 @@ import (
 // DefaultServiceTimeoutSeconds define el tiempo de espera por defecto hacia un microservicio aguas abajo
 const DefaultServiceTimeoutSeconds = 15
 
+// DefaultProxyRateLimitPerMinute define el límite por defecto de peticiones por minuto en el reverse proxy
+const DefaultProxyRateLimitPerMinute = 300
+
 // ServiceConfig define la URL, API Key y reglas de aislamiento de un microservicio aguas abajo
 type ServiceConfig struct {
 	URL                string   `json:"url"`
@@ -25,6 +28,7 @@ type ServiceConfig struct {
 	AllowAnonymous     bool     `json:"allow_anonymous,omitempty"`
 	PassthroughHeaders []string `json:"passthrough_headers,omitempty"`
 	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`
+	CacheTTLSeconds    int      `json:"cache_ttl_seconds,omitempty"`
 }
 
 // Timeout retorna la duración máxima configurada para el microservicio o el valor por defecto (15s)
@@ -33,6 +37,14 @@ func (s ServiceConfig) Timeout() time.Duration {
 		return time.Duration(DefaultServiceTimeoutSeconds) * time.Second
 	}
 	return time.Duration(s.TimeoutSeconds) * time.Second
+}
+
+// CacheTTL retorna la duración del caché GET para este microservicio (0 = desactivado por defecto)
+func (s ServiceConfig) CacheTTL() time.Duration {
+	if s.CacheTTLSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(s.CacheTTLSeconds) * time.Second
 }
 
 // IsHeaderPassthroughAllowed verifica si una cabecera HTTP personalizada está en la lista blanca del microservicio
@@ -49,26 +61,58 @@ func (s *ServiceConfig) IsHeaderPassthroughAllowed(headerName string) bool {
 	return false
 }
 
-// IsPathPublic determina si una sub-ruta del microservicio permite acceso público/anónimo
-func (s *ServiceConfig) IsPathPublic(subPath string) bool {
+func parsePublicRule(rawRule string) (method, pattern string) {
+	trimmed := strings.TrimSpace(rawRule)
+	parts := strings.Fields(trimmed)
+	if len(parts) >= 2 {
+		return strings.ToUpper(parts[0]), parts[1]
+	}
+	return "", trimmed
+}
+
+// IsRequestPublic determina si una petición (método + sub-ruta) permite acceso público/anónimo
+func (s *ServiceConfig) IsRequestPublic(method, subPath string) bool {
 	if s.AllowAnonymous {
 		return true
 	}
 	if len(s.PublicPaths) == 0 {
 		return false
 	}
+
 	cleanSubPath := "/" + strings.Trim(subPath, "/")
-	for _, p := range s.PublicPaths {
-		cleanP := strings.TrimSpace(p)
-		if cleanP == "*" || cleanP == "/*" {
+	for _, rawRule := range s.PublicPaths {
+		ruleMethod, pattern := parsePublicRule(rawRule)
+		if pattern == "" {
+			continue
+		}
+		if ruleMethod != "" && (method == "" || !strings.EqualFold(method, ruleMethod)) {
+			continue
+		}
+		if pattern == "*" || pattern == "/*" {
 			return true
 		}
-		cleanP = "/" + strings.Trim(cleanP, "/")
+
+		exactMatch := strings.HasSuffix(pattern, "$")
+		pattern = strings.TrimSuffix(pattern, "$")
+		cleanP := "/" + strings.Trim(pattern, "/")
+
+		if exactMatch {
+			if cleanSubPath == cleanP {
+				return true
+			}
+			continue
+		}
+
 		if cleanSubPath == cleanP || strings.HasPrefix(cleanSubPath, cleanP+"/") || cleanP == "/" {
 			return true
 		}
 	}
 	return false
+}
+
+// IsPathPublic determina si una sub-ruta del microservicio permite acceso público/anónimo
+func (s *ServiceConfig) IsPathPublic(subPath string) bool {
+	return s.IsRequestPublic("", subPath)
 }
 
 // IsClientAllowed verifica si un client_id tiene acceso según la lista blanca configurada
@@ -124,15 +168,24 @@ type Config struct {
 	HTTPWriteTimeout time.Duration
 	HTTPIdleTimeout  time.Duration
 
-	// Redis
-	RedisHost     string
-	RedisPort     int
-	RedisDB       int
-	RedisPassword string
-	RedisCacheTTL time.Duration
+	// Redis y Rate Limiting
+	RedisHost               string
+	RedisPort               int
+	RedisDB                 int
+	RedisPassword           string
+	RedisCacheTTL           time.Duration
+	RateLimitProxyPerMinute int
 
 	// Microservicios: prefix -> ServiceConfig
 	Microservices map[string]ServiceConfig
+}
+
+// ProxyRateLimitPerMinute retorna el límite por minuto del proxy o el valor por defecto (300)
+func (c *Config) ProxyRateLimitPerMinute() int {
+	if c == nil || c.RateLimitProxyPerMinute <= 0 {
+		return DefaultProxyRateLimitPerMinute
+	}
+	return c.RateLimitProxyPerMinute
 }
 
 // DatabaseURL genera la cadena de conexión compatible con pgxpool y PgBouncer
@@ -215,11 +268,12 @@ func Load() (*Config, error) {
 		HTTPWriteTimeout: time.Duration(getEnvInt("HTTP_WRITE_TIMEOUT", 60)) * time.Second,
 		HTTPIdleTimeout:  time.Duration(getEnvInt("HTTP_IDLE_TIMEOUT", 60)) * time.Second,
 
-		RedisHost:     getEnv("REDIS_HOST", "localhost"),
-		RedisPort:     getEnvInt("REDIS_PORT", 6379),
-		RedisDB:       getEnvInt("REDIS_DB", 0),
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		RedisCacheTTL: time.Duration(getEnvInt("REDIS_CACHE_TTL", 60)) * time.Second,
+		RedisHost:               getEnv("REDIS_HOST", "localhost"),
+		RedisPort:               getEnvInt("REDIS_PORT", 6379),
+		RedisDB:                 getEnvInt("REDIS_DB", 0),
+		RedisPassword:           getEnv("REDIS_PASSWORD", ""),
+		RedisCacheTTL:           time.Duration(getEnvInt("REDIS_CACHE_TTL", 60)) * time.Second,
+		RateLimitProxyPerMinute: getEnvInt("RATE_LIMIT_PROXY_PER_MINUTE", DefaultProxyRateLimitPerMinute),
 
 		Microservices: make(map[string]ServiceConfig),
 	}

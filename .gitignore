@@ -33,6 +33,8 @@ Thumbs.db
 tmp/
 temp/
 PLAN.md
+debug/*
+!debug/.gitkeep
 
 # Cachés históricas
 __pycache__/

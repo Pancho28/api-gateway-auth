@@ -166,5 +166,3 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		"message": "Sesión finalizada exitosamente",
 	})
 }
-
-

@@ -89,7 +89,7 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 	}
 
 	// 2. Particionamiento y aislamiento de clientes (Zero Trust / Deny by default)
-	isPublic := serviceConfig.IsPathPublic(subPath)
+	isPublic := serviceConfig.IsRequestPublic(r.Method, subPath)
 	if !isPublic && currentUser == nil {
 		log.Printf("[SECURITY] [UNAUTHORIZED] Intento de acceso a ruta privada '%s' en servicio '%s' sin sesión | IP: %s", subPath, prefix, r.RemoteAddr)
 		http.Error(w, `{"detail":"No se pudieron validar las credenciales [E-08]"}`, http.StatusUnauthorized)
@@ -130,16 +130,18 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 		return
 	}
 
-	isGet := r.Method == http.MethodGet
+	cacheTTL := serviceConfig.CacheTTL()
+	useCache := r.Method == http.MethodGet && cacheTTL > 0
 
-	// 3. Interceptación de Caché en Redis para peticiones GET particionadas por cliente y usuario (ADR-002)
+	// 3. Interceptación de Caché en Redis (opt-in por servicio) para peticiones GET particionadas por cliente, usuario y passthrough_headers (ADR-002)
 	var cacheKey string
-	if isGet {
+	if useCache {
 		userIdentifier := ""
 		if currentUser != nil {
 			userIdentifier = currentUser.Email
 		}
-		cacheKey = s.generateCacheKey(prefix, subPath, clientID, userIdentifier, r.URL.Query())
+		headerPairs := extractPassthroughCachePairs(r.Header, serviceConfig.PassthroughHeaders)
+		cacheKey = s.generateCacheKey(prefix, subPath, clientID, userIdentifier, r.URL.Query(), headerPairs...)
 		var cached CachedResponse
 		if s.redis.GetJSON(r.Context(), cacheKey, &cached) {
 			for k, v := range cached.Headers {
@@ -256,8 +258,8 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 		},
 	}
 
-	// 4. Si es petición GET, interceptar respuesta para cachear con límite seguro de memoria
-	if isGet {
+	// 4. Si el caché GET está habilitado en el servicio, interceptar respuesta para cachear con límite seguro de memoria
+	if useCache {
 		proxy.ModifyResponse = func(resp *http.Response) error {
 			resp.Header.Set("X-Cache", "MISS")
 			if resp.StatusCode == http.StatusOK && cacheKey != "" {
@@ -282,7 +284,7 @@ func (s *Service) ForwardRequest(w http.ResponseWriter, r *http.Request, rawPath
 						go func() {
 							ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 							defer cancel()
-							s.redis.SetJSON(ctx, cacheKey, cachedObj, s.cfg.RedisCacheTTL)
+							s.redis.SetJSON(ctx, cacheKey, cachedObj, cacheTTL)
 						}()
 					}
 				}
@@ -342,7 +344,38 @@ func (s *Service) sanitizePath(path string) (prefix, subPath string, err error) 
 	return prefix, subPath, nil
 }
 
-func (s *Service) generateCacheKey(prefix, subPath, clientID, userIdentifier string, query url.Values) string {
+func extractPassthroughCachePairs(headers http.Header, allowed []string) []string {
+	if len(allowed) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(allowed))
+	normalized := make([]string, 0, len(allowed))
+	for _, name := range allowed {
+		clean := strings.ToLower(strings.TrimSpace(name))
+		if clean != "" && !seen[clean] {
+			seen[clean] = true
+			normalized = append(normalized, clean)
+		}
+	}
+	sort.Strings(normalized)
+
+	pairs := make([]string, 0, len(normalized))
+	for _, lowerName := range normalized {
+		vals := headers.Values(lowerName)
+		if len(vals) == 0 {
+			continue
+		}
+		cleanVals := make([]string, 0, len(vals))
+		for _, v := range vals {
+			cleanVals = append(cleanVals, strings.TrimSpace(v))
+		}
+		sort.Strings(cleanVals)
+		pairs = append(pairs, fmt.Sprintf("%s=%s", lowerName, strings.Join(cleanVals, ",")))
+	}
+	return pairs
+}
+
+func (s *Service) generateCacheKey(prefix, subPath, clientID, userIdentifier string, query url.Values, headerPairs ...string) string {
 	keys := make([]string, 0, len(query))
 	for k := range query {
 		keys = append(keys, k)
@@ -358,7 +391,8 @@ func (s *Service) generateCacheKey(prefix, subPath, clientID, userIdentifier str
 		}
 	}
 	queryStr := strings.Join(queryParts, "&")
-	rawToHash := fmt.Sprintf("%s?%s", subPath, queryStr)
+	headerStr := strings.Join(headerPairs, "&")
+	rawToHash := fmt.Sprintf("%s?%s|%s", subPath, queryStr, headerStr)
 
 	h := sha256.New()
 	h.Write([]byte(rawToHash))

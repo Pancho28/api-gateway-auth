@@ -61,12 +61,13 @@ El Gateway se configura dinámicamente mediante la variable de entorno JSON `MIC
 | :--- | :--- | :---: | :--- |
 | `url` | `string` | **Sí** | URL base interna del microservicio destino (ej. `http://localhost:4000` o `.railway.internal`). |
 | `api_key` | `string` | No | Clave secreta inyectada en `X-Internal-Api-Key` hacia el microservicio. |
-| `allowed_clients` | `[]string` | **Sí** | Lista de `client_id` autorizados (ej. `["reservas-web", "hostess-pwa"]` o comodín `["*"]`). |
+| `allowed_clients` | `[]string` | **Sí** | Lista de `client_id` autorizados (ej. `["reservasmanager", "reservas-web", "hostess-pwa"]` o comodín `["*"]`). |
 | `required_roles` | `[]string` | No | Roles globales del Gateway admitidos (`"user"`, `"admin"`). Comparación insensible a mayúsculas/minúsculas. |
-| `public_paths` | `[]string` | No | Lista de prefijos de sub-rutas accesibles sin token JWT (ej. `["/api/v1/marketplace"]`). |
+| `public_paths` | `[]string` | No | Lista de reglas de sub-rutas accesibles sin token JWT: soporta prefijos (`"/api/v1/marketplace"`), rutas exactas terminadas en `$` (`"GET /api/v1/restaurants$"`) y prefijo opcional de método HTTP (`"POST /api/v1/reservations"`). |
 | `allow_anonymous` | `bool` | No | Si es `true`, todas las rutas del microservicio permiten acceso sin autenticación. |
 | `passthrough_headers` | `[]string` | No | **Lista blanca de cabeceras personalizadas (`X-*`)** que el Gateway permite pasar desde el cliente hacia este microservicio específico (ej. `["X-Restaurant-Id", "X-Timezone"]`). |
 | `timeout_seconds` | `int` | No | Timeout máximo de espera en segundos para peticiones hacia este microservicio (por defecto `15`s). |
+| `cache_ttl_seconds` | `int` | No | Tiempo de vida en segundos para el caché Redis de respuestas `GET 200 OK` en este microservicio (por defecto `0` = desactivado / opt-in). Cuando está activo (`> 0`), la clave de caché incluye también los valores de `passthrough_headers`. |
 
 ### 3.2. Ejemplo Canónico de Configuración en `.env`
 ```json
@@ -74,20 +75,25 @@ El Gateway se configura dinámicamente mediante la variable de entorno JSON `MIC
   "reservas": {
     "url": "http://localhost:4000",
     "api_key": "secret-key-reservas-123",
-    "allowed_clients": ["reservas-web", "hostess-pwa"],
-    "public_paths": ["/api/v1/marketplace", "/api/v1/auth/register", "/api/v1/reservations", "/api/v1/reviews"],
-    "passthrough_headers": ["X-Restaurant-Id", "X-Timezone"]
+    "allowed_clients": ["reservasmanager", "reservas-web", "hostess-pwa"],
+    "public_paths": [
+      "/api/v1/marketplace",
+      "/api/v1/auth/register",
+      "POST /api/v1/reservations",
+      "/api/v1/reservations/manage",
+      "POST /api/v1/reviews",
+      "GET /api/v1/restaurants$"
+    ],
+    "passthrough_headers": ["X-Restaurant-Id", "X-Timezone"],
+    "cache_ttl_seconds": 0
   },
-  "ventas": {
-    "url": "http://localhost:8001",
-    "api_key": "secret-key-ventas-123",
-    "allowed_clients": ["comensales-app", "staff-pos", "admin-portal"]
-  },
-  "stock": {
-    "url": "http://localhost:8002",
-    "api_key": "secret-key-stock-456",
-    "allowed_clients": ["staff-pos", "admin-portal"],
-    "required_roles": ["user", "admin"]
+  "asistente-citas": {
+    "url": "http://localhost:8005",
+    "api_key": "clave_secreta_compartida_con_el_gateway",
+    "allowed_clients": ["*"],
+    "public_paths": ["/api/v1/webhook"],
+    "passthrough_headers": ["X-Telegram-Bot-Api-Secret-Token", "X-Hub-Signature-256"],
+    "timeout_seconds": 60
   }
 }
 ```
